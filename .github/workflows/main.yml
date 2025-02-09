@@ -24,7 +24,7 @@ jobs:
         run: python script.py
 
       - name: Upload Output Video
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: output_glitched
           path: output_glitched.mp4
