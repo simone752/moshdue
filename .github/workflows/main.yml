@@ -1,0 +1,30 @@
+name: Datamosh Video Processing
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  run-datamosh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install ffmpeg -y
+          pip install -r requirements.txt
+
+      - name: Run Datamosh Script
+        run: python script.py
+
+      - name: Upload Output Video
+        uses: actions/upload-artifact@v3
+        with:
+          name: output_glitched
+          path: output_glitched.mp4
