@@ -202,7 +202,7 @@ def datamosh_and_destroy(video1_path, video2_path, output_video, settings):
 if __name__ == "__main__":
     input_video_1 = "input.mp4"       # Your first video file
     input_video_2 = "image2.mp4"    # The video to transition into
-    output_video_file = "output_glitched.mp4"
+    output_video_file = "output_horrifying_mosh.mp4"
 
     # --- TWEAK YOUR NIGHTMARE HERE ---
     destruction_settings = {
