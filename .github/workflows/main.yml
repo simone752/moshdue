@@ -26,5 +26,5 @@ jobs:
       - name: Upload Output Video
         uses: actions/upload-artifact@v4
         with:
-          name: output_glitched
-          path: output_glitched.mp4
+          name: output_horrifying_mosh
+          path: output_horrifying_mosh.mp4
