@@ -2,221 +2,223 @@ import os
 import shutil
 import subprocess
 import random
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageChops
 
-# --- CORE FFMPEG FUNCTIONS ---
+# --- FFMPEG CORE FUNCTIONS (VIDEO & AUDIO) ---
+
+def run_ffmpeg(command):
+    """A helper to run ffmpeg commands quietly."""
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def extract_frames(video_path, output_folder):
-    """Extracts all frames from a video using ffmpeg."""
+    """Extracts frames from a video into a specified folder."""
     print(f"Extracting frames from '{video_path}'...")
     os.makedirs(output_folder, exist_ok=True)
-    command = [
-        "ffmpeg",
-        "-i", video_path,
-        "-vsync", "0",
-        os.path.join(output_folder, "frame_%05d.png") # Use PNG for lossless processing
-    ]
-    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("Frame extraction complete.")
+    run_ffmpeg(["ffmpeg", "-i", video_path, "-vsync", "0", os.path.join(output_folder, "frame_%05d.png")])
 
-def reassemble_video(input_folder, output_video, fps=30):
-    """Reassembles frames into a video using ffmpeg."""
-    print("Reassembling video...")
-    command = [
-        "ffmpeg",
-        "-y", # Overwrite output file if it exists
-        "-framerate", str(fps),
-        "-i", os.path.join(input_folder, "frame_%05d.png"),
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        output_video
-    ]
-    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("Video reassembly complete.")
+def extract_audio(video_path, audio_path):
+    """Extracts the audio track from a video."""
+    print(f"Extracting audio from '{video_path}'...")
+    if os.path.exists(audio_path):
+        os.remove(audio_path)
+    run_ffmpeg(["ffmpeg", "-i", video_path, "-q:a", "0", "-map", "a", audio_path])
 
-# --- NEW PSYCHEDELIC & DESTRUCTIVE EFFECTS ---
+def glitch_audio(input_audio, output_audio):
+    """Applies horrifying glitches to an audio file."""
+    print("Destroying audio...")
+    if not os.path.exists(input_audio):
+        print("No audio track found to glitch.")
+        return False
+    # Chain of ffmpeg audio filters: echo, vibrato, tempo shifts
+    run_ffmpeg([
+        "ffmpeg", "-y", "-i", input_audio, "-af",
+        "aecho=0.8:0.9:500:0.3,vibrato=f=7.0:d=0.8,atempo=0.85",
+        output_audio
+    ])
+    return True
 
-def apply_vhs_color_bleed(image, intensity=0.5):
+def reassemble_video_with_audio(frames_folder, audio_path, output_video, fps=30):
+    """Reassembles frames and merges with audio."""
+    print("Reassembling final horrifying video...")
+    video_only_output = "temp_video_only.mp4"
+    # Create video from frames
+    run_ffmpeg([
+        "ffmpeg", "-y", "-framerate", str(fps), "-i",
+        os.path.join(frames_folder, "frame_%05d.png"),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", video_only_output
+    ])
+    # Merge with audio
+    if os.path.exists(audio_path):
+        run_ffmpeg([
+            "ffmpeg", "-y", "-i", video_only_output, "-i", audio_path,
+            "-c:v", "copy", "-c:a", "aac", "-shortest", output_video
+        ])
+        os.remove(audio_path)
+    else:
+        os.rename(video_only_output, output_video)
+    
+    if os.path.exists(video_only_output):
+        os.remove(video_only_output)
+
+
+# --- NEW DESTRUCTIVE IMAGE EFFECTS ---
+
+def apply_pixel_sort(image, intensity=0.5):
     """
-    Shifts color channels to simulate analog VHS color bleed.
-    Intensity (0.0 to 1.0) controls the max shift distance.
+    Applies a horizontal pixel sorting effect to a random portion of the image.
     """
     if random.random() > intensity:
         return image
 
-    max_offset = int(image.width * 0.02 * intensity)
-    if max_offset == 0: return image
+    img_data = image.load()
+    width, height = image.size
     
-    r, g, b = image.split()
-    
-    r_offset = (random.randint(-max_offset, max_offset), random.randint(-max_offset, max_offset))
-    g_offset = (random.randint(-max_offset, max_offset), random.randint(-max_offset, max_offset))
-    
-    # Create shifted channels
-    r = r.transform(image.size, Image.AFFINE, (1, 0, r_offset[0], 0, 1, r_offset[1]))
-    g = g.transform(image.size, Image.AFFINE, (1, 0, g_offset[0], 0, 1, g_offset[1]))
-    
-    return Image.merge("RGB", (r, g, b))
+    start_y = random.randint(0, height - 1)
+    chunk_height = random.randint(10, int(height * 0.2))
+    end_y = min(start_y + chunk_height, height)
 
-def apply_psychedelic_filters(image, intensity=0.3):
-    """
-    Applies random intense color filters.
-    Intensity (0.0 to 1.0) is the probability of applying a filter.
-    """
-    if random.random() < intensity:
-        filter_choice = random.choice(['solarize', 'posterize', 'invert', 'colorize'])
-        if filter_choice == 'solarize':
-            return ImageOps.solarize(image, threshold=random.randint(50, 200))
-        elif filter_choice == 'posterize':
-            return ImageOps.posterize(image, bits=random.randint(1, 4))
-        elif filter_choice == 'invert':
-            return ImageOps.invert(image)
-        elif filter_choice == 'colorize':
-            # Create a random two-color map for a duotone effect
-            black_color = (random.randint(0,255), random.randint(0,255), random.randint(0,255))
-            white_color = (random.randint(0,255), random.randint(0,255), random.randint(0,255))
-            return ImageOps.colorize(image.convert("L"), black=black_color, white=white_color)
-    return image
-
-def apply_analog_damage(image, intensity=0.5):
-    """
-    Simulates analog damage like noise, blur, and contrast flicker.
-    Intensity (0.0 to 1.0) controls the magnitude of the effects.
-    """
-    if random.random() < intensity:
-        # Brightness/Contrast flicker
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(random.uniform(1.0 - intensity, 1.0 + intensity))
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(random.uniform(1.0 - (intensity * 0.5), 1.0 + (intensity * 0.5)))
-
-    if random.random() < intensity * 0.5:
-        # Add blur
-        image = image.filter(ImageFilter.GaussianBlur(radius=random.uniform(0, 2 * intensity)))
-        
-    return image
-
-def corrupt_frame_bytes(image_path, intensity=10):
-    """
-    Directly corrupts the bytes of the saved image file for digital artifacts.
-    This is the original datamoshing technique.
-    """
-    try:
-        with open(image_path, 'r+b') as f:
-            data = bytearray(f.read())
-            data_len = len(data)
-            # Corrupt a larger chunk of bytes
-            num_corruptions = int(intensity * random.uniform(0.5, 1.5))
-
-            for _ in range(num_corruptions):
-                # Start corruption after the header to avoid completely breaking the file
-                index = random.randint(int(data_len * 0.1), data_len - 1)
-                data[index] = random.randint(0, 255)
+    for y in range(start_y, end_y):
+        line_pixels = [img_data[x, y] for x in range(width)]
+        # Sort pixels by their luminance (brightness)
+        line_pixels.sort(key=lambda p: 0.299*p[0] + 0.587*p[1] + 0.114*p[2])
+        for x, pixel in enumerate(line_pixels):
+            img_data[x, y] = pixel
             
-            f.seek(0)
-            f.write(data)
-    except Exception as e:
-        print(f"Warning: Could not corrupt bytes for {image_path}. Reason: {e}")
+    return image
+
+def create_random_mask(size):
+    """Creates a random black and white mask for blending."""
+    mask = Image.new("L", size, 0)
+    data = []
+    # Create chaotic vertical or horizontal bars
+    if random.random() > 0.5: # Vertical bars
+        for x in range(size[0]):
+            color = 255 if random.random() > 0.5 else 0
+            for y in range(size[1]):
+                data.append(color)
+    else: # Noisy blocks
+         for _ in range(size[0] * size[1]):
+             data.append(random.randint(0, 255))
+    mask.putdata(data)
+    return mask.filter(ImageFilter.GaussianBlur(radius=random.randint(5, 25)))
+
+
+def blend_frames_chaotically(img1, img2):
+    """
+    Blends two frames together using a random, horrifying method.
+    """
+    blend_mode = random.choice(['screen', 'difference', 'multiply', 'mask'])
+    
+    if blend_mode == 'difference':
+        return ImageChops.difference(img1, img2)
+    elif blend_mode == 'screen':
+        return ImageChops.screen(img1, img2)
+    elif blend_mode == 'multiply':
+        return ImageChops.multiply(img1, img2)
+    elif blend_mode == 'mask':
+        mask = create_random_mask(img1.size)
+        return Image.composite(img1, img2, mask)
+    return img1 # Failsafe
 
 # --- MAIN WORKFLOW ---
 
-def process_and_glitch_frames(folder, settings):
-    """The main loop to process, modify, and rearrange frames."""
-    frames = sorted([f for f in os.listdir(folder) if f.endswith('.png')])
-    num_frames = len(frames)
-    
-    last_good_frame_path = None
-
-    for i, frame_name in enumerate(frames):
-        print(f"Processing frame {i+1}/{num_frames}...", end='\r')
-        frame_path = os.path.join(folder, frame_name)
-
-        # Frame Repetition / Freezing Effect
-        if random.random() < settings['frame_repeat_chance'] and last_good_frame_path:
-            shutil.copy(last_good_frame_path, frame_path)
-
-        try:
-            with Image.open(frame_path) as img:
-                img = img.convert("RGB") # Ensure it's in RGB mode
-
-                # Apply a chain of destructive effects
-                img = apply_vhs_color_bleed(img, settings['vhs_bleed_intensity'])
-                img = apply_psychedelic_filters(img, settings['color_glitch_chance'])
-                img = apply_analog_damage(img, settings['analog_damage_intensity'])
-                
-                img.save(frame_path, 'PNG')
-                last_good_frame_path = frame_path
-
-            # Apply byte corruption AFTER saving for digital artifacts
-            if random.random() < settings['byte_corruption_chance']:
-                corrupt_frame_bytes(frame_path, settings['byte_corruption_intensity'])
-
-        except Exception as e:
-            print(f"\nError processing {frame_name}: {e}. Attempting to replace with last good frame.")
-            if last_good_frame_path:
-                shutil.copy(last_good_frame_path, frame_path)
-
-    print("\nAll frames processed.")
-
-
-def datamosh_psychedelic(video_path, output_video, fps=30, temp_folder="temp_frames_glitch", settings=None):
-    """
-    Main function to orchestrate the entire psychedelic datamoshing process.
-    """
-    if not os.path.exists(video_path):
-        print(f"Error: Input video not found at '{video_path}'")
+def datamosh_and_destroy(video1_path, video2_path, output_video, settings):
+    """Main function to orchestrate the entire psychedelic datamoshing process."""
+    if not os.path.exists(video1_path) or not os.path.exists(video2_path):
+        print("Error: One or both input videos not found.")
         return
 
-    # Define default settings if none are provided
-    if settings is None:
-        settings = {
-            'vhs_bleed_intensity': 0.6,       # 0.0 to 1.0: How much color channels shift
-            'color_glitch_chance': 0.4,       # 0.0 to 1.0: Chance to apply a solarize/posterize effect
-            'analog_damage_intensity': 0.5,   # 0.0 to 1.0: How much contrast/brightness flicker and blur
-            'frame_repeat_chance': 0.1,       # 0.0 to 1.0: Chance to repeat the previous frame (stutter)
-            'byte_corruption_chance': 0.25,    # 0.0 to 1.0: Chance to apply classic byte corruption
-            'byte_corruption_intensity': 200  # How many bytes to corrupt if triggered
-        }
+    # Setup temporary directories
+    temp_v1 = "temp_v1"; temp_v2 = "temp_v2"; temp_out = "temp_out"
+    for d in [temp_v1, temp_v2, temp_out]:
+        if os.path.exists(d): shutil.rmtree(d)
 
     try:
-        extract_frames(video_path, temp_folder)
-        process_and_glitch_frames(temp_folder, settings)
-        reassemble_video(temp_folder, output_video, fps)
-        print(f"\nDatamoshing complete! Your masterpiece is saved as '{output_video}'")
+        # 1. Extract frames and audio
+        extract_frames(video1_path, temp_v1)
+        extract_frames(video2_path, temp_v2)
+        temp_audio = "temp_audio.aac"
+        temp_audio_glitched = "temp_audio_glitched.aac"
+        extract_audio(video1_path, temp_audio)
+        glitch_audio(temp_audio, temp_audio_glitched)
+        
+        # 2. Process and glitch frames
+        frames1 = sorted([os.path.join(temp_v1, f) for f in os.listdir(temp_v1)])
+        frames2 = sorted([os.path.join(temp_v2, f) for f in os.listdir(temp_v2)])
+        total_frames = len(frames1) + len(frames2)
+        os.makedirs(temp_out)
+
+        transition_point = int(len(frames1) * settings['transition_point'])
+        transition_duration = int(len(frames1) * settings['transition_duration'])
+        transition_end = transition_point + transition_duration
+
+        print(f"Processing a total of {total_frames} frames...")
+        for i in range(total_frames):
+            print(f"  -> Generating frame {i+1}/{total_frames}", end='\r')
+            
+            # Determine which source frame(s) to use
+            if i < transition_point: # Before transition
+                current_img = Image.open(frames1[i]).convert("RGB")
+            elif transition_point <= i < transition_end: # During transition
+                idx1 = min(i, len(frames1) - 1)
+                # Map the transition progress to the frames of video 2
+                progress = (i - transition_point) / transition_duration
+                idx2 = int(progress * (len(frames2) - 1))
+                img1 = Image.open(frames1[idx1]).convert("RGB")
+                img2 = Image.open(frames2[idx2]).convert("RGB")
+                current_img = blend_frames_chaotically(img1, img2)
+            else: # After transition
+                idx2 = i - len(frames1)
+                if idx2 >= len(frames2): break # Stop if we run out of frames
+                current_img = Image.open(frames2[idx2]).convert("RGB")
+
+            # Apply additional destructive layers
+            current_img = apply_pixel_sort(current_img, settings['pixel_sort_chance'])
+            if random.random() < settings['vhs_glitch_chance']:
+                enhancer = ImageEnhance.Color(current_img)
+                current_img = enhancer.enhance(random.uniform(0.1, 3.0)) # Color saturation flicker
+                current_img = current_img.filter(ImageFilter.SHARPEN)
+
+            # Save the corrupted frame
+            output_frame_path = os.path.join(temp_out, f"frame_{i:05d}.png")
+            current_img.save(output_frame_path)
+        
+        print("\nFrame generation complete.")
+
+        # 3. Reassemble video with glitched audio
+        reassemble_video_with_audio(temp_out, temp_audio_glitched, output_video, settings['fps'])
+        print(f"\nSUCCESS! Your avant-garde film is saved as '{output_video}'")
+
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn error destroyed the process: {e}")
     finally:
-        # Clean up the temporary frame folder
-        if os.path.exists(temp_folder):
-            shutil.rmtree(temp_folder)
-            print(f"Temporary folder '{temp_folder}' removed.")
+        # 4. Cleanup
+        for d in [temp_v1, temp_v2, temp_out]:
+            if os.path.exists(d): shutil.rmtree(d)
+        if os.path.exists("temp_audio.aac"): os.remove("temp_audio.aac")
+        print("Temporary files cleaned up.")
 
 
 if __name__ == "__main__":
-    input_video = "input.mp4"
-    output_video = "output_glitched.mp4"
+    input_video_1 = "input.mp4"       # Your first video file
+    input_video_2 = "image2.mp4"    # The video to transition into
+    output_video_file = "output_glitched.mp4"
 
-    # --- TWEAK YOUR GLITCHES HERE ---
-    # Feel free to experiment with these values.
-    # Higher values = more destruction.
-    glitch_settings = {
-        # How much the red/green channels separate from blue. (0.0 to 1.0)
-        'vhs_bleed_intensity': 0.7,
+    # --- TWEAK YOUR NIGHTMARE HERE ---
+    destruction_settings = {
+        'fps': 24,
+
+        # When the transition starts (0.8 = 80% into the first video)
+        'transition_point': 0.8,
+
+        # How long the transition lasts (0.2 = 20% of the first video's length)
+        'transition_duration': 0.2,
         
-        # Chance per frame to apply a wild color filter. (0.0 to 1.0)
-        'color_glitch_chance': 0.5,
+        # Chance per frame to apply the pixel sorting effect
+        'pixel_sort_chance': 0.35,
         
-        # Intensity of fake TV noise, contrast flicker, and blur. (0.0 to 1.0)
-        'analog_damage_intensity': 0.6,
-        
-        # Chance per frame to get stuck, creating stutters. (0.0 to 1.0)
-        'frame_repeat_chance': 0.15,
-        
-        # Chance to apply the classic "digital data" glitch. (0.0 to 1.0)
-        'byte_corruption_chance': 0.3,
-        
-        # How many bytes to scramble for the digital glitch. Higher is more chaotic.
-        'byte_corruption_intensity': 500
+        # Chance per frame to apply random color shifts and sharpening
+        'vhs_glitch_chance': 0.6
     }
 
-    datamosh_psychedelic(input_video, output_video, fps=24, settings=glitch_settings)
+    datamosh_and_destroy(input_video_1, input_video_2, output_video_file, destruction_settings)
