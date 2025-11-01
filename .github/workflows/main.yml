@@ -16,15 +16,24 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt update
-          sudo apt install ffmpeg -y
+          # The environment is already quite bare, so let's use apt-get for full reliability
+          sudo apt-get update
+          sudo apt-get install ffmpeg -y
           pip install -r requirements.txt
 
-      - name: Run Datamosh Script
+      - name: Run Datamosh Script 🚀
+        # IMPORTANT: Ensure your script file is named 'script.py' in the root.
         run: python script.py
+        # The script creates 'output_horrifying_mosh.mp4' in the root directory.
 
+      - name: Check for Output File Existence
+        # This step helps diagnose future issues by confirming the file was created.
+        run: ls -l output_horrifying_mosh.mp4
+      
       - name: Upload Output Video
         uses: actions/upload-artifact@v4
         with:
-          name: output_horrifying_mosh
+          # Use the exact filename and path created by the Python script
+          name: horrifying_datamosh_result 
           path: output_horrifying_mosh.mp4
+          retention-days: 7 # Optional: keep artifacts for 7 days
