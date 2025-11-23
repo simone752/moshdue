@@ -23,14 +23,12 @@ def run_ffmpeg(command):
             command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
     except subprocess.CalledProcessError as e:
-        # We don't raise immediately; we let the caller handle specific fallbacks
         raise e
 
 def safe_extract_frames(input_path, output_folder, target_fps=24):
     """
     Attempts to extract frames using FFmpeg. 
-    If that fails (e.g., input is an image renamed to mp4), 
-    it falls back to PIL to generate a static sequence.
+    If that fails, it falls back to PIL to generate a static sequence.
     """
     print(f"Processing input: {input_path}")
     os.makedirs(output_folder, exist_ok=True)
@@ -49,7 +47,6 @@ def safe_extract_frames(input_path, output_folder, target_fps=24):
     # 2. Fallback: Treat as Static Image
     try:
         img = Image.open(input_path).convert("RGB")
-        # Generate 3 seconds worth of frames for a static image
         count = target_fps * 3 
         print(f" -> Identified as Image. Generating {count} static frames...")
         for i in range(count):
@@ -89,7 +86,6 @@ def pixel_sort(image, probability=0.5):
     img_arr = np.array(image)
     
     # Decide: Horizontal or Vertical sort?
-    # FIX: Store decision to ensure we rotate back correctly
     is_vertical = random.random() > 0.5
     
     if is_vertical:
@@ -101,12 +97,9 @@ def pixel_sort(image, probability=0.5):
     start_row = random.randint(0, max(1, rows - 5))
     end_row = random.randint(start_row + 4, rows)
     
-    # Vectorized sorting is hard, doing row-by-row for simplicity/effect
     for i in range(start_row, end_row):
         row = img_arr[i]
-        # Calculate luminance for sorting key
         lum = np.dot(row[...,:3], [0.299, 0.587, 0.114])
-        # Sort indices
         sorted_indices = np.argsort(lum)
         img_arr[i] = row[sorted_indices]
 
@@ -124,7 +117,7 @@ def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
     """
     if previous_frame is None: return current_frame
     
-    # Ensure dimensions match before numpy operations (Prevention against crash)
+    # Ensure dimensions match before numpy operations
     if current_frame.size != previous_frame.size:
         previous_frame = previous_frame.resize(current_frame.size)
 
@@ -140,6 +133,7 @@ def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
     mask = total_diff < threshold
     
     # Apply mask: Where mask is True (low motion), use previous frame's pixels
+    # This creates the "stuck" pixel effect (The YouTube Smush)
     curr_arr[mask] = prev_arr[mask]
     
     return Image.fromarray(curr_arr.astype('uint8'))
@@ -187,15 +181,12 @@ def main():
         if not files_v1 and not files_v2:
             raise Exception("No frames extracted from either input.")
 
-        # --- FIX: DETERMINE TARGET RESOLUTION ---
-        # We use the resolution of the very first frame found.
-        # All subsequent frames will be resized to this to prevents shape errors.
+        # --- DETERMINING TARGET RESOLUTION ---
         first_frame_path = files_v1[0] if files_v1 else files_v2[0]
         with Image.open(first_frame_path) as ref_img:
             target_size = ref_img.size
         print(f"Target Resolution locked to: {target_size}")
             
-        # Combine lists based on transition
         total_frames = len(files_v1) + len(files_v2)
         os.makedirs(t_out, exist_ok=True)
         
@@ -212,47 +203,40 @@ def main():
             if i < len(files_v1):
                 src_img = Image.open(files_v1[i]).convert("RGB")
                 
-                # If we are near the end of v1, blend with start of v2
+                # Blend Logic
                 frames_left = len(files_v1) - i
                 transition_len = int(len(files_v1) * SETTINGS['transition_duration'])
                 
                 if frames_left < transition_len and files_v2:
-                    # Map progress to v2
                     v2_idx = int((1 - (frames_left / transition_len)) * (len(files_v2)-1))
                     img_v2 = Image.open(files_v2[v2_idx]).convert("RGB")
-                    # Force resize for blending safety
                     if img_v2.size != src_img.size:
                          img_v2 = img_v2.resize(src_img.size)
-                    # Chaotic blend
                     src_img = ImageChops.difference(src_img, img_v2)
             else:
-                # We are in V2 territory
                 v2_idx = i - len(files_v1)
                 if v2_idx >= len(files_v2): break
                 src_img = Image.open(files_v2[v2_idx]).convert("RGB")
             
-            # --- CRITICAL FIX: FORCE RESOLUTION MATCH ---
+            # --- FORCE RESOLUTION MATCH ---
             if src_img.size != target_size:
                 src_img = src_img.resize(target_size)
 
             # --- APPLY EFFECTS ---
             
-            # 1. P-Frame Simulation (The Mosh)
-            # We don't apply this on the VERY first frame
+            # 1. P-Frame Simulation (The Smush Effect)
             if previous_img is not None:
                 src_img = simulated_p_frame_mosh(src_img, previous_img, SETTINGS['mosh_threshold'])
             
-            # 2. Pixel Sort (The Glitch)
+            # 2. Pixel Sort (The Psychedelic Melt)
             src_img = pixel_sort(src_img, SETTINGS['pixel_sort_threshold'])
             
-            # 3. JPEG Bloom (The Decay)
+            # 3. JPEG Bloom (The Low-Data look)
             src_img = jpeg_bloom(src_img, SETTINGS['bloom_intensity'])
 
-            # Save
             save_path = os.path.join(t_out, f"frame_{i:05d}.png")
             src_img.save(save_path)
             
-            # Update history for next P-frame comparison
             previous_img = src_img
 
         print("\nRendering complete. Assembling video...")
@@ -266,7 +250,6 @@ def main():
         ]
         run_ffmpeg(cmd)
         
-        # Merge Audio if exists
         if has_audio and os.path.exists(t_audio):
             run_ffmpeg([
                 "ffmpeg", "-y", "-i", "temp_video.mp4", "-i", t_audio,
@@ -280,7 +263,6 @@ def main():
 
     except Exception as e:
         print(f"\nCRITICAL FAILURE: {e}")
-        # Create a dummy file so GitHub Actions upload doesn't fail entirely (helps debugging)
         with open("error_log.txt", "w") as f: f.write(str(e))
         exit(1)
 
