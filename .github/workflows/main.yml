@@ -14,7 +14,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v3
         with:
-          lfs: true  # <--- THIS IS THE CRITICAL MISSING LINE
+          lfs: true  # <--- THIS IS REQUIRED TO DOWNLOAD ACTUAL VIDEO FILES
 
       - name: Install System Dependencies
         run: |
@@ -22,10 +22,10 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Install Python Dependencies
-        run: pip install -r requirements.txt
+        run: pip install pillow numpy
 
-      - name: Debug File Info
-        # This will tell us if the file is a tiny text file or a real video
+      - name: Debug File Sizes
+        # This will verify if the files are real videos (MBs) or pointers (Bytes)
         run: ls -lh input.mp4 image2.mp4
 
       - name: Run Datamosh Script
