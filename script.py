@@ -2,261 +2,265 @@ import os
 import shutil
 import subprocess
 import random
+import numpy as np
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageChops
 
-# --- FFMPEG CORE FUNCTIONS (VIDEO & AUDIO) ---
+# --- CONFIGURATION ---
+SETTINGS = {
+    'fps': 24,
+    'transition_duration': 0.25, # Percentage of total time
+    'pixel_sort_threshold': 0.4, # How likely to sort pixels
+    'mosh_threshold': 15,        # Threshold (0-255) for pixel updates (Higher = More Smear)
+    'bloom_intensity': 0.3       # Chance to apply heavy compression artifacts
+}
+
+# --- FFMPEG WRAPPERS ---
 
 def run_ffmpeg(command):
-    """A helper to run ffmpeg commands. Raises error with detailed info on failure."""
+    """Runs ffmpeg with robust error handling."""
     try:
-        # We capture stdout/stderr but don't print unless check=True throws
-        result = subprocess.run(
-            command, 
-            check=True, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True, 
-            encoding='utf-8'
+        subprocess.run(
+            command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
     except subprocess.CalledProcessError as e:
-        print(f"\n--- FFmpeg Command Failed ---")
-        print(f"Command: {' '.join(e.cmd)}")
-        print(f"Return Code: {e.returncode}")
-        # Print the relevant FFmpeg error output
-        print(f"Error Output (stderr):\n{e.stderr[-1000:]}") 
-        print(f"-----------------------------\n")
-        raise # Re-raise the exception to stop the script
-    except FileNotFoundError:
-        print("\nERROR: FFmpeg command not found. Ensure FFmpeg is installed and in PATH.")
-        raise
-        
-def extract_frames(video_path, output_folder):
-    """Extracts frames from a video into a specified folder."""
-    print(f"Extracting frames from '{video_path}'...")
+        # We don't raise immediately; we let the caller handle specific fallbacks
+        raise e
+
+def safe_extract_frames(input_path, output_folder, target_fps=24):
+    """
+    Attempts to extract frames using FFmpeg. 
+    If that fails (e.g., input is an image renamed to mp4), 
+    it falls back to PIL to generate a static sequence.
+    """
+    print(f"Processing input: {input_path}")
     os.makedirs(output_folder, exist_ok=True)
-    # Added -loglevel error to suppress non-critical warnings
-    run_ffmpeg(["ffmpeg", "-i", video_path, "-vsync", "0", "-q:v", "1", os.path.join(output_folder, "frame_%05d.png")])
-
-def extract_audio(video_path, audio_path):
-    """Extracts the audio track from a video."""
-    print(f"Extracting audio from '{video_path}'...")
-    if os.path.exists(audio_path):
-        os.remove(audio_path)
+    
+    # 1. Try standard Video Extraction
     try:
-        # Use -vn to ignore video, -c:a aac to ensure compatible codec
-        run_ffmpeg(["ffmpeg", "-i", video_path, "-vn", "-c:a", "aac", "-b:a", "128k", "-strict", "experimental", audio_path])
-        return True
-    except subprocess.CalledProcessError:
-        print("Warning: Failed to extract audio (likely no audio stream found).")
-        return False
-
-
-def glitch_audio(input_audio, output_audio):
-    """Applies horrifying glitches to an audio file."""
-    print("Destroying audio...")
-    if not os.path.exists(input_audio):
-        print("No audio track found to glitch.")
-        return False
-    # Added -strict experimental for aac compatibility
-    run_ffmpeg([
-        "ffmpeg", "-y", "-i", input_audio, "-af",
-        "aecho=0.8:0.9:500:0.3,vibrato=f=7.0:d=0.8,atempo=0.85",
-        "-c:a", "aac", "-b:a", "128k", "-strict", "experimental",
-        output_audio
-    ])
-    return True
-
-def reassemble_video_with_audio(frames_folder, audio_path, output_video, fps=30):
-    """Reassembles frames and merges with audio."""
-    print("Reassembling final horrifying video...")
-    video_only_output = "temp_video_only.mp4"
-    
-    # 1. Create video from frames
-    run_ffmpeg([
-        "ffmpeg", "-y", "-framerate", str(fps), "-i",
-        os.path.join(frames_folder, "frame_%05d.png"),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", 
-        "-preset", "medium", # Better compatibility than ultrafast
-        video_only_output
-    ])
-    
-    # 2. Merge with audio
-    if os.path.exists(audio_path):
-        print("Merging video and glitched audio...")
         run_ffmpeg([
-            "ffmpeg", "-y", "-i", video_only_output, "-i", audio_path,
-            "-c:v", "copy", "-c:a", "aac", "-shortest", 
-            "-map", "0:v:0", "-map", "1:a:0", # Ensure video and audio streams are mapped
-            output_video
+            "ffmpeg", "-i", input_path, "-vf", f"fps={target_fps}", 
+            os.path.join(output_folder, "frame_%05d.png")
         ])
-    else:
-        print("No audio to merge, renaming video-only file.")
-        os.rename(video_only_output, output_video)
+        print(" -> Identified as Video. Frames extracted.")
+        return
+    except subprocess.CalledProcessError:
+        print(" -> FFmpeg failed. Attempting to treat as Static Image...")
+
+    # 2. Fallback: Treat as Static Image
+    try:
+        img = Image.open(input_path).convert("RGB")
+        # Generate 3 seconds worth of frames for a static image
+        count = target_fps * 3 
+        print(f" -> Identified as Image. Generating {count} static frames...")
+        for i in range(count):
+            img.save(os.path.join(output_folder, f"frame_{i:05d}.png"))
+    except Exception as e:
+        print(f"FATAL: Could not read file as video OR image. {e}")
+        raise e
+
+def extract_and_glitch_audio(video_path, output_audio):
+    """Extracts audio, adds reverb/distortion."""
+    temp_raw = "temp_raw_audio.aac"
+    if os.path.exists(temp_raw): os.remove(temp_raw)
     
-    # 3. Cleanup temp video
-    if os.path.exists(video_only_output):
-        os.remove(video_only_output)
-
-
-# --- DESTRUCTIVE IMAGE EFFECTS (Rest of your code remains the same) ---
-
-def apply_pixel_sort(image, intensity=0.5):
-# ... (function body omitted for brevity, assume it's the same) ...
-    if random.random() > intensity:
-        return image
+    # Try extraction
     try:
-        img_data = image.load()
-    except Exception:
-        return image
-    width, height = image.size
-    start_y = random.randint(0, height - 1)
-    chunk_height = random.randint(10, int(height * 0.2))
-    end_y = min(start_y + chunk_height, height)
-    for y in range(start_y, end_y):
-        line_pixels = [img_data[x, y] for x in range(width)]
-        line_pixels.sort(key=lambda p: 0.299*p[0] + 0.587*p[1] + 0.114*p[2])
-        for x, pixel in enumerate(line_pixels):
-            img_data[x, y] = pixel
-    return image
+        run_ffmpeg(["ffmpeg", "-i", video_path, "-vn", "-c:a", "aac", temp_raw])
+    except:
+        return False # No audio found
 
-def create_random_mask(size):
-# ... (function body omitted for brevity, assume it's the same) ...
-    mask = Image.new("L", size, 0)
-    data = []
+    # Apply Glitch Filters (Vibrato + Echo + Tempo Slow)
+    try:
+        run_ffmpeg([
+            "ffmpeg", "-y", "-i", temp_raw, "-af", 
+            "aecho=0.8:0.9:1000:0.3,vibrato=f=6.0:d=0.5,atempo=0.9",
+            "-c:a", "aac", output_audio
+        ])
+        return True
+    except:
+        return False
+
+# --- DATAMOSH EFFECT SIMULATIONS ---
+
+def pixel_sort(image, probability=0.5):
+    """Randomly sorts rows of pixels based on luminance."""
+    if random.random() > probability: return image
+
+    img_arr = np.array(image)
+    
+    # Decide: Horizontal or Vertical sort?
     if random.random() > 0.5:
-        for x in range(size[0]):
-            color = 255 if random.random() > 0.5 else 0
-            for y in range(size[1]):
-                data.append(color)
-    else:
-        for _ in range(size[0] * size[1]):
-            data.append(random.randint(0, 255))
-    mask.putdata(data)
-    return mask.filter(ImageFilter.GaussianBlur(radius=random.randint(5, 25)))
+        img_arr = np.swapaxes(img_arr, 0, 1) # Rotate for vertical processing
+        
+    rows, cols, _ = img_arr.shape
+    
+    # Sort a random chunk of rows
+    start_row = random.randint(0, rows - 5)
+    end_row = random.randint(start_row + 4, rows)
+    
+    # Vectorized sorting is hard, doing row-by-row for simplicity/effect
+    for i in range(start_row, end_row):
+        row = img_arr[i]
+        # Calculate luminance for sorting key
+        lum = np.dot(row[...,:3], [0.299, 0.587, 0.114])
+        # Sort indices
+        sorted_indices = np.argsort(lum)
+        img_arr[i] = row[sorted_indices]
 
+    if random.random() > 0.5:
+        img_arr = np.swapaxes(img_arr, 0, 1) # Rotate back
+        
+    return Image.fromarray(img_arr)
 
-def blend_frames_chaotically(img1, img2):
-# ... (function body omitted for brevity, assume it's the same) ...
-    blend_mode = random.choice(['screen', 'difference', 'multiply', 'mask'])
-    if img1.size != img2.size:
-        img2 = img2.resize(img1.size)
-    if blend_mode == 'difference':
-        return ImageChops.difference(img1, img2)
-    elif blend_mode == 'screen':
-        return ImageChops.screen(img1, img2)
-    elif blend_mode == 'multiply':
-        return ImageChops.multiply(img1, img2)
-    elif blend_mode == 'mask':
-        mask = create_random_mask(img1.size)
-        return Image.composite(img1, img2, mask)
-    return img1
+def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
+    """
+    The 'Datamosh' look:
+    Compare current frame to previous. 
+    If a pixel hasn't changed *enough* (below threshold), 
+    keep the PREVIOUS pixel (ghosting/smearing).
+    """
+    if previous_frame is None: return current_frame
+    
+    curr_arr = np.array(current_frame).astype(int)
+    prev_arr = np.array(previous_frame).astype(int)
+    
+    # Calculate absolute difference per channel
+    diff = np.abs(curr_arr - prev_arr)
+    # Sum differences across RGB
+    total_diff = np.sum(diff, axis=2)
+    
+    # Create mask: Where is difference < threshold?
+    mask = total_diff < threshold
+    
+    # Apply mask: Where mask is True (low motion), use previous frame's pixels
+    # This creates the "stuck" pixel effect
+    curr_arr[mask] = prev_arr[mask]
+    
+    return Image.fromarray(curr_arr.astype('uint8'))
 
-# --- MAIN WORKFLOW (Rest of your code remains the same) ---
+def jpeg_bloom(image, intensity=0.5):
+    """Saves and re-opens image at low quality to create block artifacts."""
+    if random.random() > intensity: return image
+    
+    import io
+    buffer = io.BytesIO()
+    # Save with low quality
+    image.save(buffer, format="JPEG", quality=random.randint(5, 20))
+    buffer.seek(0)
+    return Image.open(buffer)
 
-def datamosh_and_destroy(video1_path, video2_path, output_video, settings):
-    """Main function to orchestrate the entire psychedelic datamoshing process."""
-    if not os.path.exists(video1_path) or not os.path.exists(video2_path):
-        print(f"FATAL ERROR: Input videos not found. Check repository files.")
-        raise FileNotFoundError(f"Missing input video: {video1_path} or {video2_path}") # Ensure immediate failure
+# --- MAIN WORKFLOW ---
 
-    temp_v1 = "temp_v1"; temp_v2 = "temp_v2"; temp_out = "temp_out"
-    for d in [temp_v1, temp_v2, temp_out]:
+def main():
+    v1_path = "input.mp4"
+    v2_path = "image2.mp4"
+    final_output = "output_horrifying_mosh.mp4"
+    
+    # Temp folders
+    t_v1 = "frames_v1"
+    t_v2 = "frames_v2"
+    t_out = "frames_out"
+    t_audio = "glitched_audio.aac"
+    
+    # Cleanup start
+    for d in [t_v1, t_v2, t_out]:
         if os.path.exists(d): shutil.rmtree(d)
-
+        
     try:
-        # 1. Extract frames and audio
-        extract_frames(video1_path, temp_v1)
-        extract_frames(video2_path, temp_v2)
-        temp_audio = "temp_audio.aac"
-        temp_audio_glitched = "temp_audio_glitched.aac"
+        # 1. EXTRACTION (With Fallback)
+        safe_extract_frames(v1_path, t_v1, SETTINGS['fps'])
+        safe_extract_frames(v2_path, t_v2, SETTINGS['fps'])
         
-        has_audio = extract_audio(video1_path, temp_audio)
-        if has_audio:
-            glitch_audio(temp_audio, temp_audio_glitched)
+        # Audio (Try v1 first)
+        has_audio = extract_and_glitch_audio(v1_path, t_audio)
         
-        # 2. Process and glitch frames (Error handling for empty lists is now in here)
-        frames1 = sorted([os.path.join(temp_v1, f) for f in os.listdir(temp_v1) if f.endswith('.png')])
-        frames2 = sorted([os.path.join(temp_v2, f) for f in os.listdir(temp_v2) if f.endswith('.png')])
+        # 2. PROCESSING LOOP
+        files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.endswith('.png')])
+        files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.endswith('.png')])
         
-        if not frames1 or not frames2:
-            print("FATAL ERROR: Frame extraction failed. No PNG files found in temp folders.")
-            raise Exception("No frames found after extraction.")
-
-        total_frames_to_generate = len(frames1) + len(frames2)
-        os.makedirs(temp_out)
-
-        transition_point = int(len(frames1) * settings['transition_point'])
-        transition_duration = int(len(frames1) * settings['transition_duration'])
-        transition_end = transition_point + transition_duration
-
-        print(f"Processing a total of {total_frames_to_generate} frames...")
-        
-        for i in range(total_frames_to_generate):
-            print(f"  -> Generating frame {i+1}/{total_frames_to_generate}", end='\r')
+        if not files_v1 and not files_v2:
+            raise Exception("No frames extracted from either input.")
             
-            current_img = None
+        # Combine lists based on transition
+        # We append v2 to v1, but we blend them during the transition
+        total_frames = len(files_v1) + len(files_v2)
+        os.makedirs(t_out, exist_ok=True)
+        
+        print(f"Generating {total_frames} frames of destruction...")
+        
+        previous_img = None
+        
+        for i in range(total_frames):
+            print(f"Rendering frame {i}/{total_frames}", end='\r')
             
-            try:
-                if i < transition_point:
-                    current_img = Image.open(frames1[i]).convert("RGB")
-                elif transition_point <= i < transition_end:
-                    idx1 = min(i, len(frames1) - 1)
-                    progress = (i - transition_point) / max(1, transition_duration)
-                    idx2 = int(progress * (len(frames2) - 1))
-                    
-                    img1 = Image.open(frames1[idx1]).convert("RGB")
-                    img2 = Image.open(frames2[idx2]).convert("RGB")
-                    current_img = blend_frames_chaotically(img1, img2)
-                else:
-                    idx2 = i - len(frames1)
-                    if idx2 >= len(frames2): break
-                    current_img = Image.open(frames2[idx2]).convert("RGB")
-
-                if current_img:
-                    current_img = apply_pixel_sort(current_img, settings['pixel_sort_chance'])
-                    if random.random() < settings['vhs_glitch_chance']:
-                        enhancer = ImageEnhance.Color(current_img)
-                        current_img = enhancer.enhance(random.uniform(0.1, 3.0))
-                        current_img = current_img.filter(ImageFilter.SHARPEN)
-
-                    output_frame_path = os.path.join(temp_out, f"frame_{i:05d}.png")
-                    current_img.save(output_frame_path)
+            # Determine Source Image
+            if i < len(files_v1):
+                src_img = Image.open(files_v1[i]).convert("RGB")
                 
-            except Exception as e:
-                print(f"\nWarning: Failed to process frame {i}. Skipping. Error: {e}")
-                continue
+                # If we are near the end of v1, blend with start of v2
+                frames_left = len(files_v1) - i
+                transition_len = int(len(files_v1) * SETTINGS['transition_duration'])
+                
+                if frames_left < transition_len and files_v2:
+                    # Map progress to v2
+                    v2_idx = int((1 - (frames_left / transition_len)) * (len(files_v2)-1))
+                    img_v2 = Image.open(files_v2[v2_idx]).convert("RGB")
+                    # Chaotic blend
+                    src_img = ImageChops.difference(src_img, img_v2)
+            else:
+                # We are in V2 territory
+                v2_idx = i - len(files_v1)
+                if v2_idx >= len(files_v2): break
+                src_img = Image.open(files_v2[v2_idx]).convert("RGB")
             
-        print("\nFrame generation complete.")
+            # --- APPLY EFFECTS ---
+            
+            # 1. P-Frame Simulation (The Mosh)
+            # We don't apply this on the VERY first frame
+            if previous_img is not None:
+                src_img = simulated_p_frame_mosh(src_img, previous_img, SETTINGS['mosh_threshold'])
+            
+            # 2. Pixel Sort (The Glitch)
+            src_img = pixel_sort(src_img, SETTINGS['pixel_sort_threshold'])
+            
+            # 3. JPEG Bloom (The Decay)
+            src_img = jpeg_bloom(src_img, SETTINGS['bloom_intensity'])
 
-        # 3. Reassemble video with glitched audio
-        audio_to_use = temp_audio_glitched if has_audio else ""
-        reassemble_video_with_audio(temp_out, audio_to_use, output_video, settings['fps'])
-        print(f"\nSUCCESS! Your avant-garde film is saved as '{output_video}'")
+            # Save
+            save_path = os.path.join(t_out, f"frame_{i:05d}.png")
+            src_img.save(save_path)
+            
+            # Update history for next P-frame comparison
+            previous_img = src_img
+
+        print("\nRendering complete. Assembling video...")
+
+        # 3. ASSEMBLY
+        cmd = [
+            "ffmpeg", "-y", "-framerate", str(SETTINGS['fps']),
+            "-i", os.path.join(t_out, "frame_%05d.png"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium",
+            "temp_video.mp4"
+        ]
+        run_ffmpeg(cmd)
+        
+        # Merge Audio if exists
+        if has_audio and os.path.exists(t_audio):
+            run_ffmpeg([
+                "ffmpeg", "-y", "-i", "temp_video.mp4", "-i", t_audio,
+                "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
+                "-shortest", final_output
+            ])
+        else:
+            os.rename("temp_video.mp4", final_output)
+            
+        print(f"\nDONE. Output saved to {final_output}")
 
     except Exception as e:
-        print(f"\nFATAL WORKFLOW ERROR: Process halt! {e}")
-        # Re-raise to ensure the process completes with a non-zero exit code
-        raise 
-    finally:
-        # 4. Cleanup
-        print("Cleaning up temporary files...")
-        for d in [temp_v1, temp_v2, temp_out]:
-            if os.path.exists(d): shutil.rmtree(d)
-        if os.path.exists("temp_audio.aac"): os.remove("temp_audio.aac")
-        print("Cleanup complete.")
-
+        print(f"\nCRITICAL FAILURE: {e}")
+        # Create a dummy file so GitHub Actions upload doesn't fail entirely (helps debugging)
+        with open("error_log.txt", "w") as f: f.write(str(e))
+        exit(1)
 
 if __name__ == "__main__":
-    input_video_1 = "input.mp4"
-    input_video_2 = "image2.mp4"
-    output_video_file = "output_horrifying_mosh.mp4"
-
-    destruction_settings = {
-        'fps': 24,
-        'transition_point': 0.8,
-        'transition_duration': 0.2,
-        'pixel_sort_chance': 0.35,
-        'vhs_glitch_chance': 0.6
-    }
-
-    datamosh_and_destroy(input_video_1, input_video_2, output_video_file, destruction_settings)
+    main()
