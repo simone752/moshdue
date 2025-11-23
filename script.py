@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extreme Datamosh — Robust rewrite
+Extreme Datamosh — Robust rewrite (Fixed for Defaults)
 
 Requirements:
     - ffmpeg (and ffprobe) on PATH
@@ -8,13 +8,9 @@ Requirements:
     - pip install pillow numpy
 
 Usage:
-    python extreme_datamosh.py --v1 input.mp4 --v2 image2.mp4 --out output_mosh.mp4
-
-This script:
- - Validates inputs (video vs image) with ffprobe
- - Extracts frames via ffmpeg (verifies extracted frames)
- - Applies macroblock-based P-frame smearing + extra effects
- - Re-assembles video and optionally merges glitched audio
+    python script.py
+    OR
+    python script.py --v1 myvideo.mp4 --v2 myimage.png
 """
 import argparse
 import os
@@ -57,16 +53,6 @@ def run(cmd: List[str], capture_output=True) -> Tuple[int, str, str]:
     err = proc.stderr if proc.stderr is not None else ""
     return proc.returncode, out, err
 
-def ffprobe_stream_info(path: str) -> dict:
-    """Return ffprobe stream-level info (json-like minimal)."""
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=codec_type,width,height,codec_name",
-        "-of", "default=noprint_wrappers=1", path
-    ]
-    rc, out, err = run(cmd)
-    return {"rc": rc, "out": out, "err": err}
-
 def check_is_image(path: str) -> bool:
     """Use Pillow to probe whether a path is an image (safe try)."""
     try:
@@ -82,7 +68,6 @@ def check_is_image(path: str) -> bool:
 def extract_frames_with_ffmpeg(input_path: str, out_folder: str, fps: int) -> None:
     """
     Extract frames using ffmpeg into out_folder/frame_%05d.png
-    Validates that at least one frame was produced.
     """
     os.makedirs(out_folder, exist_ok=True)
     pattern = os.path.join(out_folder, "frame_%05d.png")
@@ -93,7 +78,6 @@ def extract_frames_with_ffmpeg(input_path: str, out_folder: str, fps: int) -> No
     ]
     rc, out, err = run(cmd)
     if rc != 0:
-        # print ffmpeg stderr for diagnosis
         print(f"[ffmpeg extraction failed] rc={rc}\n{err.strip()}\n")
         raise RuntimeError(f"ffmpeg failed to extract frames from {input_path}")
 
@@ -118,13 +102,11 @@ def image_fallback_generate_frames(image_path: str, out_folder: str, fps: int, d
 def extract_and_glitch_audio(input_path: str, out_audio: str) -> bool:
     """
     Extract audio stream and process to produce a 'glitched' audio track.
-    Returns True if audio produced, False otherwise.
     """
     temp = "temp_raw_audio.aac"
     # extract audio
     rc, _, err = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path, "-vn", "-c:a", "aac", temp])
     if rc != 0 or not os.path.exists(temp):
-        # no audio or failed
         if os.path.exists(temp): os.remove(temp)
         return False
     # apply filters
@@ -133,14 +115,13 @@ def extract_and_glitch_audio(input_path: str, out_audio: str) -> bool:
         "-af", "aecho=0.8:0.9:1000:0.3,vibrato=f=5.0:d=0.4,atempo=0.92",
         "-c:a", "aac", out_audio
     ])
-    os.remove(temp)
+    if os.path.exists(temp): os.remove(temp)
     return rc2 == 0 and os.path.exists(out_audio)
 
 # -------------------------
 # Visual effect primitives
 # -------------------------
 def jpeg_bloom(img: Image.Image, intensity: float = 0.7, passes: int = 1) -> Image.Image:
-    """Repeated JPEG resaves to emphasize block artifacts."""
     if random.random() > intensity:
         return img
     out = img.convert("RGB")
@@ -153,7 +134,6 @@ def jpeg_bloom(img: Image.Image, intensity: float = 0.7, passes: int = 1) -> Ima
     return out
 
 def channel_shift(img: Image.Image, max_offset: int = 8, chance: float = 0.6) -> Image.Image:
-    """Offset R/G/B channels slightly for chromatic aberration."""
     if random.random() > chance:
         return img
     r, g, b = img.split()
@@ -164,7 +144,6 @@ def channel_shift(img: Image.Image, max_offset: int = 8, chance: float = 0.6) ->
     return Image.merge("RGB", (ofs(r), ofs(g), ofs(b)))
 
 def pixel_sort(img: Image.Image, chance: float = 0.6, band_div: int = 12) -> Image.Image:
-    """Random horizontal pixel-sort on a band with probability chance."""
     if random.random() > chance:
         return img
     arr = np.array(img)
@@ -186,10 +165,6 @@ def pixel_sort(img: Image.Image, chance: float = 0.6, band_div: int = 12) -> Ima
 # -------------------------
 def macroblock_smear(current: Image.Image, previous: Optional[Image.Image],
                      block_size: int = 16, threshold: float = 36.0, spread: int = 1) -> Image.Image:
-    """
-    Copy entire macroblocks from previous frame into current frame where
-    average per-pixel difference is below threshold. This simulates P-frame reuse.
-    """
     if previous is None:
         return current
 
@@ -215,7 +190,7 @@ def macroblock_smear(current: Image.Image, previous: Optional[Image.Image],
     cur_blocks = cur.reshape(bh, bs, bw, bs, c)
     prev_blocks = prev.reshape(bh, bs, bw, bs, c)
 
-    # sum absolute diff per block, normalize to per-pixel average (0-255*3)
+    # sum absolute diff per block, normalize to per-pixel average
     diff_blocks = np.sum(np.abs(cur_blocks - prev_blocks), axis=(1, 3, 4))
     avg_blocks = diff_blocks / (bs * bs)
 
@@ -287,7 +262,6 @@ def process(v1_frames: List[str], v2_frames: List[str], out_folder: str, setting
             dup_path = os.path.join(out_folder, f"frame_{out_idx:05d}.png")
             prev_img.save(dup_path)
             out_idx += 1
-            # keep prev_img for next iteration (we saved duplication frame)
 
         # Macroblock smear (P-frame)
         src = macroblock_smear(src, prev_img,
@@ -336,8 +310,9 @@ def assemble_video_from_frames(frame_folder: str, fps: int, tmp_video: str):
 # -------------------------
 def main():
     parser = argparse.ArgumentParser(prog="extreme_datamosh")
-    parser.add_argument("--v1", required=True, help="Primary input (video or image)")
-    parser.add_argument("--v2", required=True, help="Secondary input (video or image)")
+    # CHANGED: arguments are now optional with defaults
+    parser.add_argument("--v1", default="input.mp4", help="Primary input (video or image)")
+    parser.add_argument("--v2", default="image2.mp4", help="Secondary input (video or image)")
     parser.add_argument("--out", default="output_horrifying_mosh.mp4")
     parser.add_argument("--fps", type=int, default=DEFAULTS["fps"])
     parser.add_argument("--clean", action="store_true", help="Remove temp folders after run")
@@ -354,7 +329,7 @@ def main():
             print(f"ERROR: input not found: {p}")
             sys.exit(2)
 
-    # inspect with ffprobe to determine if they are videos
+    # inspect with ffprobe
     def is_video(path):
         rc, out, err = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", path])
         return rc == 0 and out.strip() != ""
@@ -383,16 +358,15 @@ def main():
                     pass
 
     try:
-        # Extract frames for v1
+        # Extract frames v1
         if v1_is_video:
             extract_frames_with_ffmpeg(v1, t_v1, fps)
         else:
-            # verify it's an image
             if not check_is_image(v1):
                 raise RuntimeError(f"{v1} is neither a video nor a valid image.")
             image_fallback_generate_frames(v1, t_v1, fps, duration_secs=3)
 
-        # Extract frames for v2
+        # Extract frames v2
         if v2_is_video:
             extract_frames_with_ffmpeg(v2, t_v2, fps)
         else:
@@ -400,23 +374,23 @@ def main():
                 raise RuntimeError(f"{v2} is neither a video nor a valid image.")
             image_fallback_generate_frames(v2, t_v2, fps, duration_secs=3)
 
-        # Try to extract & glitch audio (from v1)
+        # Try audio (from v1)
         has_audio = extract_and_glitch_audio(v1, t_audio)
 
-        # Collect frames list sorted
+        # Collect sorted frames
         files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.lower().endswith(".png")])
         files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.lower().endswith(".png")])
 
         if not files_v1 and not files_v2:
             raise RuntimeError("No frames available after extraction.")
 
-        # Apply effects and produce final frames
+        # Process effects
         process(files_v1, files_v2, t_out, DEFAULTS)
 
-        # Assemble video
+        # Assemble
         assemble_video_from_frames(t_out, fps, temp_vid)
 
-        # Attach audio if present
+        # Mux Audio
         if has_audio and os.path.exists(t_audio):
             rc, out, err = run([
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -425,8 +399,7 @@ def main():
                 "-shortest", final_out
             ])
             if rc != 0:
-                print("Failed to mux audio. Error from ffmpeg:")
-                print(err)
+                print("Failed to mux audio. Error from ffmpeg:", err)
                 raise RuntimeError("ffmpeg failed to mux audio")
             else:
                 os.remove(temp_vid)
@@ -442,13 +415,13 @@ def main():
         if args.clean:
             for d in (t_v1, t_v2, t_out, t_audio, temp_vid):
                 if os.path.exists(d):
-                    try:
-                        if os.path.isdir(d):
-                            shutil.rmtree(d)
-                        else:
+                    if os.path.isdir(d):
+                        shutil.rmtree(d)
+                    else:
+                        try:
                             os.remove(d)
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
 
 if __name__ == "__main__":
     main()
