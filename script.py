@@ -89,13 +89,16 @@ def pixel_sort(image, probability=0.5):
     img_arr = np.array(image)
     
     # Decide: Horizontal or Vertical sort?
-    if random.random() > 0.5:
+    # FIX: Store decision to ensure we rotate back correctly
+    is_vertical = random.random() > 0.5
+    
+    if is_vertical:
         img_arr = np.swapaxes(img_arr, 0, 1) # Rotate for vertical processing
         
     rows, cols, _ = img_arr.shape
     
     # Sort a random chunk of rows
-    start_row = random.randint(0, rows - 5)
+    start_row = random.randint(0, max(1, rows - 5))
     end_row = random.randint(start_row + 4, rows)
     
     # Vectorized sorting is hard, doing row-by-row for simplicity/effect
@@ -107,7 +110,7 @@ def pixel_sort(image, probability=0.5):
         sorted_indices = np.argsort(lum)
         img_arr[i] = row[sorted_indices]
 
-    if random.random() > 0.5:
+    if is_vertical:
         img_arr = np.swapaxes(img_arr, 0, 1) # Rotate back
         
     return Image.fromarray(img_arr)
@@ -121,6 +124,10 @@ def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
     """
     if previous_frame is None: return current_frame
     
+    # Ensure dimensions match before numpy operations (Prevention against crash)
+    if current_frame.size != previous_frame.size:
+        previous_frame = previous_frame.resize(current_frame.size)
+
     curr_arr = np.array(current_frame).astype(int)
     prev_arr = np.array(previous_frame).astype(int)
     
@@ -133,7 +140,6 @@ def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
     mask = total_diff < threshold
     
     # Apply mask: Where mask is True (low motion), use previous frame's pixels
-    # This creates the "stuck" pixel effect
     curr_arr[mask] = prev_arr[mask]
     
     return Image.fromarray(curr_arr.astype('uint8'))
@@ -180,9 +186,16 @@ def main():
         
         if not files_v1 and not files_v2:
             raise Exception("No frames extracted from either input.")
+
+        # --- FIX: DETERMINE TARGET RESOLUTION ---
+        # We use the resolution of the very first frame found.
+        # All subsequent frames will be resized to this to prevents shape errors.
+        first_frame_path = files_v1[0] if files_v1 else files_v2[0]
+        with Image.open(first_frame_path) as ref_img:
+            target_size = ref_img.size
+        print(f"Target Resolution locked to: {target_size}")
             
         # Combine lists based on transition
-        # We append v2 to v1, but we blend them during the transition
         total_frames = len(files_v1) + len(files_v2)
         os.makedirs(t_out, exist_ok=True)
         
@@ -193,6 +206,8 @@ def main():
         for i in range(total_frames):
             print(f"Rendering frame {i}/{total_frames}", end='\r')
             
+            src_img = None
+
             # Determine Source Image
             if i < len(files_v1):
                 src_img = Image.open(files_v1[i]).convert("RGB")
@@ -205,6 +220,9 @@ def main():
                     # Map progress to v2
                     v2_idx = int((1 - (frames_left / transition_len)) * (len(files_v2)-1))
                     img_v2 = Image.open(files_v2[v2_idx]).convert("RGB")
+                    # Force resize for blending safety
+                    if img_v2.size != src_img.size:
+                         img_v2 = img_v2.resize(src_img.size)
                     # Chaotic blend
                     src_img = ImageChops.difference(src_img, img_v2)
             else:
@@ -213,6 +231,10 @@ def main():
                 if v2_idx >= len(files_v2): break
                 src_img = Image.open(files_v2[v2_idx]).convert("RGB")
             
+            # --- CRITICAL FIX: FORCE RESOLUTION MATCH ---
+            if src_img.size != target_size:
+                src_img = src_img.resize(target_size)
+
             # --- APPLY EFFECTS ---
             
             # 1. P-Frame Simulation (The Mosh)
