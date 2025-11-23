@@ -1,153 +1,211 @@
+#!/usr/bin/env python3
+"""
+Datamosh / YouTube Low Data Effect (P-Frame Smearing) — fixed & amplified.
+
+Requirements:
+    pip install pillow numpy
+
+Usage:
+    python extreme_datamosh.py
+
+Input files:
+    - input.mp4   (or any video / image for the first source)
+    - image2.mp4  (second source to transition into)
+
+Output:
+    - output_horrifying_mosh.mp4
+"""
 import os
 import shutil
 import subprocess
 import random
+import math
 import numpy as np
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageChops
+from PIL import Image, ImageChops
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (cranked up for extreme surreal datamosh) ---
 SETTINGS = {
     'fps': 24,
-    'transition_duration': 0.25, # Percentage of total time
-    'pixel_sort_threshold': 0.4, # How likely to sort pixels
-    'mosh_threshold': 15,        # Threshold (0-255) for pixel updates (Higher = More Smear)
-    'bloom_intensity': 0.3       # Chance to apply heavy compression artifacts
+    'transition_duration': 0.20,      # fraction of v1 frames used to morph into v2
+    'pixel_sort_threshold': 0.85,     # chance to apply pixel sorting to a chunk
+    'mosh_threshold': 40,             # lower = more exact-preserve, higher = more smear (0-765 for full RGB sum)
+    'bloom_intensity': 0.85,          # chance to apply JPEG re-encode artifacts
+    'block_size': 16,                 # macroblock size to decide smearing (like codec blocks)
+    'block_spread': 2,                # expand neighboring blocks by this many blocks when smearing
+    'frame_dup_chance': 0.12,         # chance to duplicate previous frame (classic datamosh technique)
+    'jpeg_passes': 2,                 # repeated JPEG resaves to amplify blockiness
+    'pixel_sort_chance_per_frame': 0.6
 }
 
-# --- FFMPEG WRAPPERS ---
-
-def run_ffmpeg(command):
-    """Runs ffmpeg with robust error handling."""
+# --- UTIL: run ffmpeg ---
+def run_ffmpeg(cmd):
     try:
-        subprocess.run(
-            command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
-        raise e
+        print("FFMPEG ERROR:", e.stderr[:400])
+        raise
 
+# --- FRAME EXTRACTION (robust) ---
 def safe_extract_frames(input_path, output_folder, target_fps=24):
-    """
-    Attempts to extract frames using FFmpeg. 
-    If that fails, it falls back to PIL to generate a static sequence.
-    """
-    print(f"Processing input: {input_path}")
     os.makedirs(output_folder, exist_ok=True)
-    
-    # 1. Try standard Video Extraction
+    pattern = os.path.join(output_folder, "frame_%05d.png")
     try:
         run_ffmpeg([
-            "ffmpeg", "-i", input_path, "-vf", f"fps={target_fps}", 
-            os.path.join(output_folder, "frame_%05d.png")
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", input_path, "-vf", f"fps={target_fps}", "-vsync", "0",
+            pattern
         ])
-        print(" -> Identified as Video. Frames extracted.")
+        print(f"Extracted frames from {input_path} -> {output_folder}")
         return
-    except subprocess.CalledProcessError:
-        print(" -> FFmpeg failed. Attempting to treat as Static Image...")
+    except Exception:
+        # fallback: if it's an image, create repeated frames
+        try:
+            img = Image.open(input_path).convert("RGB")
+            count = target_fps * 3
+            for i in range(count):
+                img.save(os.path.join(output_folder, f"frame_{i:05d}.png"))
+            print(f"Treated {input_path} as static image and generated frames.")
+        except Exception as e:
+            raise RuntimeError(f"Could not extract frames from {input_path}: {e}")
 
-    # 2. Fallback: Treat as Static Image
-    try:
-        img = Image.open(input_path).convert("RGB")
-        count = target_fps * 3 
-        print(f" -> Identified as Image. Generating {count} static frames...")
-        for i in range(count):
-            img.save(os.path.join(output_folder, f"frame_{i:05d}.png"))
-    except Exception as e:
-        print(f"FATAL: Could not read file as video OR image. {e}")
-        raise e
-
+# --- AUDIO GLITCH (simple) ---
 def extract_and_glitch_audio(video_path, output_audio):
-    """Extracts audio, adds reverb/distortion."""
     temp_raw = "temp_raw_audio.aac"
-    if os.path.exists(temp_raw): os.remove(temp_raw)
-    
-    # Try extraction
     try:
-        run_ffmpeg(["ffmpeg", "-i", video_path, "-vn", "-c:a", "aac", temp_raw])
-    except:
-        return False # No audio found
-
-    # Apply Glitch Filters (Vibrato + Echo + Tempo Slow)
+        run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", video_path, "-vn", "-c:a", "aac", temp_raw])
+    except Exception:
+        return False
+    # apply echo + vibrato + slow
     try:
         run_ffmpeg([
-            "ffmpeg", "-y", "-i", temp_raw, "-af", 
-            "aecho=0.8:0.9:1000:0.3,vibrato=f=6.0:d=0.5,atempo=0.9",
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", temp_raw, "-af",
+            "aecho=0.8:0.9:1000:0.3,vibrato=f=5.0:d=0.4,atempo=0.92",
             "-c:a", "aac", output_audio
         ])
         return True
-    except:
+    except Exception:
         return False
 
-# --- DATAMOSH EFFECT SIMULATIONS ---
+# --- EFFECTS HELPERS ---
+
+def jpeg_bloom(image, intensity=0.5, passes=1):
+    """Re-save image to JPEG multiple times to accentuate block artifacts and color shifts."""
+    if random.random() > intensity:
+        return image
+    import io
+    out = image.convert("RGB")
+    for p in range(max(1, passes)):
+        buf = io.BytesIO()
+        q = random.randint(6, 18)
+        out.save(buf, format="JPEG", quality=q)
+        buf.seek(0)
+        out = Image.open(buf).convert("RGB")
+    return out
+
+def channel_shift(image, max_offset=8):
+    """Slightly offset color channels to create chromatic aberration and surreal look."""
+    if random.random() > 0.6:
+        return image
+    r, g, b = image.split()
+    w, h = image.size
+    def shift_band(band):
+        dx = random.randint(-max_offset, max_offset)
+        dy = random.randint(-max_offset, max_offset)
+        return ImageChops.offset(band, dx, dy)
+    r2 = shift_band(r)
+    g2 = shift_band(g)
+    b2 = shift_band(b)
+    return Image.merge("RGB", (r2, g2, b2))
 
 def pixel_sort(image, probability=0.5):
-    """Randomly sorts rows of pixels based on luminance."""
-    if random.random() > probability: return image
+    """Randomly sort pixel runs horizontally/vertically across several rows/cols."""
+    if random.random() > probability:
+        return image
+    arr = np.array(image)
+    h, w, c = arr.shape
+    # choose random band height/width
+    band_h = random.randint(1, max(1, h // 12))
+    start_row = random.randint(0, max(0, h - band_h))
+    end_row = start_row + band_h
+    for r in range(start_row, end_row):
+        row = arr[r].copy()
+        lum = np.dot(row[..., :3], [0.299, 0.587, 0.114])
+        # sort by luminance but in randomized direction to avoid uniform look
+        idx = np.argsort(lum)
+        if random.random() > 0.5:
+            idx = idx[::-1]
+        arr[r] = row[idx]
+    return Image.fromarray(arr)
 
-    img_arr = np.array(image)
-    
-    # Decide: Horizontal or Vertical sort?
-    is_vertical = random.random() > 0.5
-    
-    if is_vertical:
-        img_arr = np.swapaxes(img_arr, 0, 1) # Rotate for vertical processing
-        
-    rows, cols, _ = img_arr.shape
-    
-    # Sort a random chunk of rows
-    start_row = random.randint(0, max(1, rows - 5))
-    end_row = random.randint(start_row + 4, rows)
-    
-    for i in range(start_row, end_row):
-        row = img_arr[i]
-        lum = np.dot(row[...,:3], [0.299, 0.587, 0.114])
-        sorted_indices = np.argsort(lum)
-        img_arr[i] = row[sorted_indices]
-
-    if is_vertical:
-        img_arr = np.swapaxes(img_arr, 0, 1) # Rotate back
-        
-    return Image.fromarray(img_arr)
-
-def simulated_p_frame_mosh(current_frame, previous_frame, threshold=15):
+# --- P-FRAME MACROBLOCK SMEAR ---
+def simulated_p_frame_mosh(cur_img, prev_img, threshold=15, block_size=16, spread=1):
     """
-    The 'Datamosh' look:
-    Compare current frame to previous. 
-    If a pixel hasn't changed *enough* (below threshold), 
-    keep the PREVIOUS pixel (ghosting/smearing).
+    Block-based smear:
+    - Compare blocks between current and previous frame (sum of absolute differences).
+    - If block difference < threshold -> copy the ENTIRE block from previous frame (smear).
+    - Optionally expand smear to neighbor blocks (spread).
     """
-    if previous_frame is None: return current_frame
-    
-    # Ensure dimensions match before numpy operations
-    if current_frame.size != previous_frame.size:
-        previous_frame = previous_frame.resize(current_frame.size)
+    if prev_img is None:
+        return cur_img
+    # ensure same size
+    if cur_img.size != prev_img.size:
+        prev_img = prev_img.resize(cur_img.size)
+    cur_arr = np.array(cur_img).astype(np.int32)
+    prev_arr = np.array(prev_img).astype(np.int32)
+    h, w, ch = cur_arr.shape
 
-    curr_arr = np.array(current_frame).astype(int)
-    prev_arr = np.array(previous_frame).astype(int)
-    
-    # Calculate absolute difference per channel
-    diff = np.abs(curr_arr - prev_arr)
-    # Sum differences across RGB
-    total_diff = np.sum(diff, axis=2)
-    
-    # Create mask: Where is difference < threshold?
-    mask = total_diff < threshold
-    
-    # Apply mask: Where mask is True (low motion), use previous frame's pixels
-    # This creates the "stuck" pixel effect (The YouTube Smush)
-    curr_arr[mask] = prev_arr[mask]
-    
-    return Image.fromarray(curr_arr.astype('uint8'))
+    bs = max(4, int(block_size))
+    # pad to multiple of bs
+    pad_h = (bs - (h % bs)) % bs
+    pad_w = (bs - (w % bs)) % bs
+    if pad_h or pad_w:
+        cur_arr = np.pad(cur_arr, ((0, pad_h), (0, pad_w), (0,0)), mode='edge')
+        prev_arr = np.pad(prev_arr, ((0, pad_h), (0, pad_w), (0,0)), mode='edge')
+    H, W, _ = cur_arr.shape
+    bh = H // bs
+    bw = W // bs
 
-def jpeg_bloom(image, intensity=0.5):
-    """Saves and re-opens image at low quality to create block artifacts."""
-    if random.random() > intensity: return image
-    
-    import io
-    buffer = io.BytesIO()
-    # Save with low quality
-    image.save(buffer, format="JPEG", quality=random.randint(5, 20))
-    buffer.seek(0)
-    return Image.open(buffer)
+    # compute block diffs
+    # reshape into blocks: (bh, bs, bw, bs, ch)
+    cur_blocks = cur_arr.reshape(bh, bs, bw, bs, ch)
+    prev_blocks = prev_arr.reshape(bh, bs, bw, bs, ch)
+    # compute sum absolute diff per block
+    diff_blocks = np.sum(np.abs(cur_blocks - prev_blocks), axis=(1,3,4))  # shape (bh, bw)
+
+    # threshold scaled to block total (max diff per pixel is 255*3)
+    # allow threshold to be in same units as sum per block
+    # if user used small threshold (like 40) we compare average per pixel:
+    avg_diff_blocks = diff_blocks / (bs * bs)  # average diff per pixel per block (0-255*3)
+    # create boolean mask of blocks to smear
+    smear_block_mask = avg_diff_blocks < threshold
+
+    # optionally spread smear to neighbors to make it more dramatic
+    if spread > 0:
+        new_mask = smear_block_mask.copy()
+        for y in range(bh):
+            for x in range(bw):
+                if smear_block_mask[y, x]:
+                    y0 = max(0, y - spread)
+                    y1 = min(bh, y + spread + 1)
+                    x0 = max(0, x - spread)
+                    x1 = min(bw, x + spread + 1)
+                    new_mask[y0:y1, x0:x1] = True
+        smear_block_mask = new_mask
+
+    # Build output by copying blocks from prev where mask True
+    out_arr = cur_arr.copy()
+    for by in range(bh):
+        for bx in range(bw):
+            if smear_block_mask[by, bx]:
+                y0, y1 = by * bs, (by + 1) * bs
+                x0, x1 = bx * bs, (bx + 1) * bs
+                out_arr[y0:y1, x0:x1, :] = prev_arr[y0:y1, x0:x1, :]
+
+    # unpad if padded
+    if pad_h or pad_w:
+        out_arr = out_arr[:h, :w, :]
+
+    return Image.fromarray(out_arr.astype('uint8'))
 
 # --- MAIN WORKFLOW ---
 
@@ -155,116 +213,117 @@ def main():
     v1_path = "input.mp4"
     v2_path = "image2.mp4"
     final_output = "output_horrifying_mosh.mp4"
-    
-    # Temp folders
+
     t_v1 = "frames_v1"
     t_v2 = "frames_v2"
     t_out = "frames_out"
     t_audio = "glitched_audio.aac"
-    
-    # Cleanup start
+
     for d in [t_v1, t_v2, t_out]:
         if os.path.exists(d): shutil.rmtree(d)
-        
-    try:
-        # 1. EXTRACTION (With Fallback)
-        safe_extract_frames(v1_path, t_v1, SETTINGS['fps'])
-        safe_extract_frames(v2_path, t_v2, SETTINGS['fps'])
-        
-        # Audio (Try v1 first)
-        has_audio = extract_and_glitch_audio(v1_path, t_audio)
-        
-        # 2. PROCESSING LOOP
-        files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.endswith('.png')])
-        files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.endswith('.png')])
-        
-        if not files_v1 and not files_v2:
-            raise Exception("No frames extracted from either input.")
 
-        # --- DETERMINING TARGET RESOLUTION ---
-        first_frame_path = files_v1[0] if files_v1 else files_v2[0]
-        with Image.open(first_frame_path) as ref_img:
-            target_size = ref_img.size
-        print(f"Target Resolution locked to: {target_size}")
-            
-        total_frames = len(files_v1) + len(files_v2)
-        os.makedirs(t_out, exist_ok=True)
-        
-        print(f"Generating {total_frames} frames of destruction...")
-        
-        previous_img = None
-        
-        for i in range(total_frames):
-            print(f"Rendering frame {i}/{total_frames}", end='\r')
-            
-            src_img = None
+    # 1. Extract frames (with fallback)
+    safe_extract_frames(v1_path, t_v1, SETTINGS['fps'])
+    safe_extract_frames(v2_path, t_v2, SETTINGS['fps'])
 
-            # Determine Source Image
-            if i < len(files_v1):
-                src_img = Image.open(files_v1[i]).convert("RGB")
-                
-                # Blend Logic
-                frames_left = len(files_v1) - i
-                transition_len = int(len(files_v1) * SETTINGS['transition_duration'])
-                
-                if frames_left < transition_len and files_v2:
-                    v2_idx = int((1 - (frames_left / transition_len)) * (len(files_v2)-1))
-                    img_v2 = Image.open(files_v2[v2_idx]).convert("RGB")
-                    if img_v2.size != src_img.size:
-                         img_v2 = img_v2.resize(src_img.size)
-                    src_img = ImageChops.difference(src_img, img_v2)
-            else:
-                v2_idx = i - len(files_v1)
-                if v2_idx >= len(files_v2): break
-                src_img = Image.open(files_v2[v2_idx]).convert("RGB")
-            
-            # --- FORCE RESOLUTION MATCH ---
-            if src_img.size != target_size:
-                src_img = src_img.resize(target_size)
+    has_audio = extract_and_glitch_audio(v1_path, t_audio)
 
-            # --- APPLY EFFECTS ---
-            
-            # 1. P-Frame Simulation (The Smush Effect)
-            if previous_img is not None:
-                src_img = simulated_p_frame_mosh(src_img, previous_img, SETTINGS['mosh_threshold'])
-            
-            # 2. Pixel Sort (The Psychedelic Melt)
-            src_img = pixel_sort(src_img, SETTINGS['pixel_sort_threshold'])
-            
-            # 3. JPEG Bloom (The Low-Data look)
-            src_img = jpeg_bloom(src_img, SETTINGS['bloom_intensity'])
+    files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.lower().endswith('.png')])
+    files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.lower().endswith('.png')])
 
-            save_path = os.path.join(t_out, f"frame_{i:05d}.png")
-            src_img.save(save_path)
-            
-            previous_img = src_img
+    if not files_v1 and not files_v2:
+        raise RuntimeError("No frames extracted from either input.")
 
-        print("\nRendering complete. Assembling video...")
+    first_frame = files_v1[0] if files_v1 else files_v2[0]
+    with Image.open(first_frame) as img:
+        target_size = img.size
 
-        # 3. ASSEMBLY
-        cmd = [
-            "ffmpeg", "-y", "-framerate", str(SETTINGS['fps']),
-            "-i", os.path.join(t_out, "frame_%05d.png"),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium",
-            "temp_video.mp4"
-        ]
-        run_ffmpeg(cmd)
-        
-        if has_audio and os.path.exists(t_audio):
-            run_ffmpeg([
-                "ffmpeg", "-y", "-i", "temp_video.mp4", "-i", t_audio,
-                "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest", final_output
-            ])
+    total_estimated = len(files_v1) + len(files_v2)
+    os.makedirs(t_out, exist_ok=True)
+    print(f"Target resolution: {target_size} — producing ~{total_estimated} frames...")
+
+    prev_img = None
+    out_index = 0
+
+    # Preload lists for speed (optional)
+    def open_rgb(path):
+        return Image.open(path).convert("RGB")
+
+    for i in range(len(files_v1) + len(files_v2)):
+        # Determine source
+        if i < len(files_v1):
+            src = open_rgb(files_v1[i])
+            # transition into v2 near the end of v1
+            frames_left = len(files_v1) - i
+            transition_len = max(1, int(len(files_v1) * SETTINGS['transition_duration']))
+            if frames_left <= transition_len and files_v2:
+                tnorm = 1 - (frames_left / float(max(1, transition_len)))
+                v2_idx = min(len(files_v2)-1, int(tnorm * (len(files_v2)-1)))
+                img_v2 = open_rgb(files_v2[v2_idx]).resize(src.size)
+                # use difference + additive blend to make weird morphs
+                src = ImageChops.add(ImageChops.difference(src, img_v2), img_v2, scale=1.2, offset=-10)
         else:
-            os.rename("temp_video.mp4", final_output)
-            
-        print(f"\nDONE. Output saved to {final_output}")
+            v2_idx = i - len(files_v1)
+            if v2_idx >= len(files_v2):
+                break
+            src = open_rgb(files_v2[v2_idx])
 
-    except Exception as e:
-        print(f"\nCRITICAL FAILURE: {e}")
-        with open("error_log.txt", "w") as f: f.write(str(e))
-        exit(1)
+        if src.size != target_size:
+            src = src.resize(target_size)
+
+        # Occasionally duplicate previous frame (makes no I-frame effect)
+        if prev_img is not None and random.random() < SETTINGS['frame_dup_chance']:
+            # save the previous frame again to exaggerate smear
+            dup_path = os.path.join(t_out, f"frame_{out_index:05d}.png")
+            prev_img.save(dup_path)
+            out_index += 1
+            print(f"Frame duplication at output index {out_index}", end='\r')
+
+        # 1) P-frame macroblock smear
+        src = simulated_p_frame_mosh(src, prev_img,
+                                     threshold=SETTINGS['mosh_threshold'],
+                                     block_size=SETTINGS['block_size'],
+                                     spread=SETTINGS['block_spread'])
+
+        # 2) Pixel sort (occasionally)
+        src = pixel_sort(src, SETTINGS['pixel_sort_chance_per_frame'])
+
+        # 3) channel chromatic shifts
+        src = channel_shift(src)
+
+        # 4) aggressive jpeg bloom (repeated)
+        src = jpeg_bloom(src, intensity=SETTINGS['bloom_intensity'], passes=SETTINGS['jpeg_passes'])
+
+        # final safety convert and save
+        out_path = os.path.join(t_out, f"frame_{out_index:05d}.png")
+        src.convert("RGB").save(out_path)
+        prev_img = src.copy()
+        out_index += 1
+        print(f"Rendered frame {out_index}", end='\r')
+
+    print("\nAssembling video with ffmpeg...")
+
+    temp_vid = "temp_video.mp4"
+    run_ffmpeg([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-framerate", str(SETTINGS['fps']),
+        "-i", os.path.join(t_out, "frame_%05d.png"),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "medium", temp_vid
+    ])
+
+    if has_audio and os.path.exists(t_audio):
+        run_ffmpeg([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", temp_vid, "-i", t_audio,
+            "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
+            "-shortest", final_output
+        ])
+    else:
+        os.replace(temp_vid, final_output)
+
+    print(f"\nDONE — output: {final_output}")
 
 if __name__ == "__main__":
     main()
+
