@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageChops
 
 # -------------------------
-# Configuration
+# Configuration / Defaults
 # -------------------------
 DEFAULTS = {
     "fps": 24,
@@ -21,9 +21,13 @@ DEFAULTS = {
     "frame_dup_chance": 0.12,
     "jpeg_intensity": 0.85,
     "jpeg_passes": 2,
-    "pixel_sort_chance": 0.6,
+    "pixel_sort_chance": 0.8,
     "channel_shift_chance": 0.6,
     "pixel_sort_band_div": 12,
+    "enable_audio_glitch": True, # New option to toggle audio glitching
+    "enable_pixel_sort": True,   # New option to toggle pixel sorting
+    "enable_jpeg_bloom": False,   # New option to toggle JPEG bloom
+    "enable_channel_shift": True # New option to toggle channel shift
 }
 
 # -------------------------
@@ -47,6 +51,8 @@ def check_is_image(path):
 
 def check_file_sanity(path):
     """Debugs if the file is an LFS pointer."""
+    if not os.path.exists(path):
+        return
     size = os.path.getsize(path)
     print(f"DEBUG: Checking '{path}' - Size: {size} bytes")
     if size < 2000:
@@ -230,9 +236,12 @@ def process(v1_frames, v2_frames, out_folder, settings):
             out_idx += 1
             
         src = macroblock_smear(src, prev_img, settings["block_size"], settings["mosh_threshold"], settings["block_spread"])
-        src = pixel_sort(src, settings["pixel_sort_chance"], settings["pixel_sort_band_div"])
-        src = channel_shift(src, 8, settings["channel_shift_chance"])
-        src = jpeg_bloom(src, settings["jpeg_intensity"], settings["jpeg_passes"])
+        if settings.get("enable_pixel_sort", True):
+            src = pixel_sort(src, settings["pixel_sort_chance"], settings["pixel_sort_band_div"])
+        if settings.get("enable_channel_shift", True):
+            src = channel_shift(src, 8, settings["channel_shift_chance"])
+        if settings.get("enable_jpeg_bloom", True):
+            src = jpeg_bloom(src, settings["jpeg_intensity"], settings["jpeg_passes"])
 
         src.save(os.path.join(out_folder, f"frame_{out_idx:05d}.png"))
         prev_img = src.copy()
@@ -250,7 +259,26 @@ def main():
     parser.add_argument("--out", default="output_horrifying_mosh.mp4")
     parser.add_argument("--fps", type=int, default=DEFAULTS["fps"])
     parser.add_argument("--clean", action="store_true")
+    
+    # New arguments for customization
+    parser.add_argument("--no-audio-glitch", action="store_true", help="Disable audio glitching")
+    parser.add_argument("--no-pixel-sort", action="store_true", help="Disable pixel sorting")
+    parser.add_argument("--no-jpeg-bloom", action="store_true", help="Disable JPEG bloom")
+    parser.add_argument("--no-channel-shift", action="store_true", help="Disable channel shift")
+    parser.add_argument("--mosh-threshold", type=float, default=DEFAULTS["mosh_threshold"], help="Mosh threshold")
+    parser.add_argument("--pixel-sort-chance", type=float, default=DEFAULTS["pixel_sort_chance"], help="Pixel sort chance")
+    
     args = parser.parse_args()
+
+    # Update settings based on arguments
+    settings = DEFAULTS.copy()
+    settings["enable_audio_glitch"] = not args.no_audio_glitch
+    settings["enable_pixel_sort"] = not args.no_pixel_sort
+    settings["enable_jpeg_bloom"] = not args.no_jpeg_bloom
+    settings["enable_channel_shift"] = not args.no_channel_shift
+    settings["mosh_threshold"] = args.mosh_threshold
+    settings["pixel_sort_chance"] = args.pixel_sort_chance
+    settings["fps"] = args.fps
 
     # Check Sanity
     check_file_sanity(args.v1)
@@ -258,6 +286,8 @@ def main():
 
     # Check if files are video
     def is_video(path):
+        if not os.path.exists(path):
+            return False
         rc, out, _ = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", path])
         return rc == 0 and out.strip() != ""
 
@@ -287,12 +317,14 @@ def main():
             if not check_is_image(args.v2): raise RuntimeError(f"CRITICAL ERROR: {args.v2} is neither a video nor a valid image.")
             image_fallback_generate_frames(args.v2, t_v2, args.fps)
 
-        has_audio = extract_and_glitch_audio(args.v1, t_audio)
+        has_audio = False
+        if settings["enable_audio_glitch"]:
+            has_audio = extract_and_glitch_audio(args.v1, t_audio)
         
         files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.endswith(".png")])
         files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.endswith(".png")])
         
-        process(files_v1, files_v2, t_out, DEFAULTS)
+        process(files_v1, files_v2, t_out, settings)
         
         # Assemble
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(args.fps),
