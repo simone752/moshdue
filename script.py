@@ -14,11 +14,11 @@ SETTINGS = {
     "transition_frac": 0.2,     # How fast videos blend
     
     # Chaos Parameters
-    "mosh_threshold": 30,       # Lower = More motion required to update pixel (More Smear)
+    "mosh_threshold": 12,       # Lower = More motion required to update pixel (More Smear)
     "bloom_chance": 0.08,       # Chance to explode compression artifacts
-    "sort_chance": 0.05,        # Chance to melt the screen
+    "sort_chance": 0.25,        # Chance to melt the screen
     "invert_chance": 0.02,      # Chance to flash negative
-    "stutter_chance": 0.03,     # Chance to freeze frame
+    "stutter_chance": 0.23,     # Chance to freeze frame
 }
 
 # --- FFMPEG HELPERS ---
