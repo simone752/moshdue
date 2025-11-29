@@ -25,24 +25,27 @@ import cv2
 # -------------------- DEFAULT CONFIG --------------------
 SETTINGS = {
     "fps": 24,
-    # Process at 360p for speed + crunchy block aesthetics. 
-    # Upscaled at the end.
-    "internal_res": (640, 360), 
-    
+    # Process at 360p for speed + crunchy block aesthetics.
+    "internal_res": (640, 360),
+
     # --- MOSH PHYSICS ---
-    "mosh_threshold": 15,       # Higher = More pixels refuse to update (More Drag)
-    "drag_momentum": 0.90,      # 0.0-1.0: How much of the previous frame persists
-    "block_size": 16,           # Size of the "glitch blocks" (8, 16, 32)
-    
+    "mosh_threshold": 15,
+    "drag_momentum": 0.90,
+    "block_size": 16,
+
+    ### AGGIUNTO ### - Questo è il FIX necessario
+    "transition_frac": 0.10,
+    "transition_mode": "diff",   # 'diff', 'xor', 'add'
+
     # --- CHAOS PROBABILITIES (Per Frame) ---
-    "prob_sort": 0.15,          # Pixel Sorting
-    "prob_bloom": 0.10,         # JPEG Compression/Fry
-    "prob_invert": 0.02,        # Negative Flash
-    "prob_pulse": 0.05,         # RGB Channel Split Pulse
-    
+    "prob_sort": 0.15,
+    "prob_bloom": 0.10,
+    "prob_invert": 0.02,
+    "prob_pulse": 0.05,
+
     # --- INTENSITIES ---
-    "sort_magnitude": 0.5,      # How much of the screen gets sorted
-    "bloom_power": 4,           # Compression factor (Higher = more destroyed)
+    "sort_magnitude": 0.5,
+    "bloom_power": 4,
 }
 
 # -------------------- HELPERS --------------------
