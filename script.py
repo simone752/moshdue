@@ -5,347 +5,344 @@ import shutil
 import subprocess
 import sys
 import random
-import io
+import math
 import numpy as np
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageOps, ImageEnhance
 
 # -------------------------
 # Configuration / Defaults
 # -------------------------
 DEFAULTS = {
     "fps": 24,
-    "transition_fraction": 0.20,
-    "mosh_threshold": 36.0,
+    "transition_fraction": 0.25,
     "block_size": 16,
-    "block_spread": 2,
-    "frame_dup_chance": 0.12,
-    "jpeg_intensity": 0.85,
-    "jpeg_passes": 2,
-    "pixel_sort_chance": 0.8,
-    "channel_shift_chance": 0.6,
-    "pixel_sort_band_div": 12,
-    "enable_audio_glitch": True, # New option to toggle audio glitching
-    "enable_pixel_sort": True,   # New option to toggle pixel sorting
-    "enable_jpeg_bloom": False,   # New option to toggle JPEG bloom
-    "enable_channel_shift": True # New option to toggle channel shift
+    
+    # Probabilities (0.0 - 1.0) of an event STARTING per frame
+    "prob_pixel_sort": 0.05,
+    "prob_liquid": 0.02,
+    "prob_rgb_split": 0.08,
+    "prob_invert": 0.01,
+    "prob_stutter": 0.03,
+    "prob_mirror": 0.01,
+    
+    # Intensities
+    "intensity_liquid": 20, # How much the screen melts
+    "intensity_rgb": 15,    # How far channels drift
 }
 
 # -------------------------
-# Utilities
+# Audio Destruction Engines
 # -------------------------
-def run(cmd, capture_output=True):
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE if capture_output else None,
-                          stderr=subprocess.PIPE if capture_output else None,
-                          text=True)
-    out = proc.stdout if proc.stdout is not None else ""
-    err = proc.stderr if proc.stderr is not None else ""
-    return proc.returncode, out, err
-
-def check_is_image(path):
-    try:
-        with Image.open(path) as im:
-            im.verify()
-        return True
-    except Exception:
-        return False
-
-def check_file_sanity(path):
-    """Debugs if the file is an LFS pointer."""
-    if not os.path.exists(path):
-        return
-    size = os.path.getsize(path)
-    print(f"DEBUG: Checking '{path}' - Size: {size} bytes")
-    if size < 2000:
-        print(f"WARNING: '{path}' is dangerously small ({size} bytes).")
-        print("It is likely a Git LFS pointer, not a real video.")
-        try:
-            with open(path, 'r', errors='ignore') as f:
-                head = f.read(100)
-                print(f"File content preview: {head}")
-        except:
-            pass
-
-# -------------------------
-# Robust frame extraction
-# -------------------------
-def extract_frames_with_ffmpeg(input_path, out_folder, fps):
-    os.makedirs(out_folder, exist_ok=True)
-    pattern = os.path.join(out_folder, "frame_%05d.png")
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", input_path, "-vf", f"fps={fps}", "-vsync", "0",
-        pattern
+def get_random_audio_filter():
+    """Returns a random ffmpeg audio filter chain for variety."""
+    chains = [
+        # 1. The Deep Void (Echo + Lowpass)
+        "aecho=0.8:0.9:1000:0.3,lowpass=f=500",
+        # 2. The Broken Modem (Bitcrush + Tremolo)
+        "acrusher=level_in=8:level_out=18:bits=4:mode=log:aa=1,tremolo=f=10.0:d=0.7",
+        # 3. Alien Radio (Bandpass + Flanger)
+        "highpass=f=200,lowpass=f=3000,flanger=delay=0:depth=2:regen=50:speed=2",
+        # 4. Demon (Pitch Down + Reverse Reverb)
+        "asetrate=44100*0.8,aresample=44100,aecho=0.8:0.8:40:0.5",
+        # 5. Fast Chopper
+        "vibrato=f=15:d=1"
     ]
-    rc, out, err = run(cmd)
-    if rc != 0:
-        print(f"[ffmpeg extraction failed] rc={rc}\n{err.strip()}\n")
-        raise RuntimeError(f"ffmpeg failed to extract frames from {input_path}")
-
-    produced = [f for f in os.listdir(out_folder) if f.lower().endswith(".png")]
-    if not produced:
-        raise RuntimeError(f"ffmpeg reported success but produced 0 frames in {out_folder}")
-
-def image_fallback_generate_frames(image_path, out_folder, fps, duration_secs=3):
-    os.makedirs(out_folder, exist_ok=True)
-    with Image.open(image_path) as im:
-        im = im.convert("RGB")
-        count = fps * duration_secs
-        for i in range(count):
-            im.save(os.path.join(out_folder, f"frame_{i:05d}.png"))
+    return random.choice(chains)
 
 # -------------------------
-# Audio processing
+# Visual Effects (Numpy Optimized)
 # -------------------------
-def extract_and_glitch_audio(input_path, out_audio):
-    temp = "temp_raw_audio.aac"
-    rc, _, _ = run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path, "-vn", "-c:a", "aac", temp])
-    if rc != 0 or not os.path.exists(temp):
-        if os.path.exists(temp): os.remove(temp)
-        return False
-    
-    rc2, _, _ = run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", temp,
-        "-af", "aecho=0.8:0.9:1000:0.3,vibrato=f=5.0:d=0.4,atempo=0.92",
-        "-c:a", "aac", out_audio
-    ])
-    if os.path.exists(temp): os.remove(temp)
-    return rc2 == 0 and os.path.exists(out_audio)
 
-# -------------------------
-# Visual Effects
-# -------------------------
-def jpeg_bloom(img, intensity=0.7, passes=1):
-    if random.random() > intensity: return img
-    out = img.convert("RGB")
-    for _ in range(max(1, passes)):
-        buf = io.BytesIO()
-        q = random.randint(6, 20)
-        out.save(buf, format="JPEG", quality=q)
-        buf.seek(0)
-        out = Image.open(buf).convert("RGB")
-    return out
-
-def channel_shift(img, max_offset=8, chance=0.6):
-    if random.random() > chance: return img
-    r, g, b = img.split()
-    def ofs(band):
-        dx = random.randint(-max_offset, max_offset)
-        dy = random.randint(-max_offset, max_offset)
-        return ImageChops.offset(band, dx, dy)
-    return Image.merge("RGB", (ofs(r), ofs(g), ofs(b)))
-
-def pixel_sort(img, chance=0.6, band_div=12):
-    if random.random() > chance: return img
+def effect_liquid_displacement(img, intensity, time_step):
+    """
+    Creates a waving, melting effect using sine waves.
+    """
     arr = np.array(img)
-    h, w, _ = arr.shape
-    band_h = random.randint(1, max(1, h // band_div))
-    start = random.randint(0, max(0, h - band_h))
-    end = start + band_h
-    for r in range(start, end):
-        row = arr[r].copy()
-        lum = np.dot(row[..., :3], [0.299, 0.587, 0.114])
-        idx = np.argsort(lum)
-        if random.random() > 0.5: idx = idx[::-1]
-        arr[r] = row[idx]
+    rows, cols, ch = arr.shape
+    
+    # Create sine wave offsets based on row index and time
+    # This creates the "wavy" look
+    x_indices = np.arange(cols)
+    y_indices = np.arange(rows)
+    
+    # Shift amount varies by row (y)
+    shift_x = (np.sin(y_indices / 20.0 + time_step) * intensity).astype(int)
+    
+    # Apply row-wise roll (horizontal displacement)
+    for i in range(rows):
+        arr[i] = np.roll(arr[i], shift_x[i], axis=0)
+        
     return Image.fromarray(arr)
 
-def macroblock_smear(current, previous, block_size=16, threshold=36.0, spread=1):
+def effect_rgb_split(img, intensity):
+    """
+    Separates R, G, B channels spatially.
+    """
+    r, g, b = img.split()
+    
+    # Random drift direction
+    x_drift = random.randint(-intensity, intensity)
+    y_drift = random.randint(-intensity, intensity)
+    
+    r = ImageChops.offset(r, x_drift, 0)
+    b = ImageChops.offset(b, -x_drift, y_drift)
+    
+    return Image.merge("RGB", (r, g, b))
+
+def effect_pixel_sort(img, threshold=100):
+    """
+    Sorts pixels, but only in bright areas to keep structure.
+    """
+    arr = np.array(img)
+    # Convert to grayscale for thresholding
+    gray = np.dot(arr[...,:3], [0.299, 0.587, 0.114])
+    
+    # Find rows that are "bright enough" to sort
+    mask = np.mean(gray, axis=1) > threshold
+    
+    # Only sort selected rows to save time and keep aesthetic
+    for i in np.where(mask)[0]:
+        # Sort by luminance
+        row = arr[i]
+        lum = np.dot(row[...,:3], [0.299, 0.587, 0.114])
+        arr[i] = row[np.argsort(lum)]
+        
+    return Image.fromarray(arr)
+
+def macroblock_smear(current, previous, block_size=16, threshold=25):
+    """
+    The classic P-Frame datamosh simulation.
+    """
     if previous is None: return current
     if current.size != previous.size: previous = previous.resize(current.size)
     
-    cur = np.array(current).astype(np.int32)
-    prev = np.array(previous).astype(np.int32)
-    h, w, c = cur.shape
-    bs = max(4, int(block_size))
+    cur_arr = np.array(current).astype(int)
+    prev_arr = np.array(previous).astype(int)
     
-    # Pad to block alignment
-    pad_h = (bs - (h % bs)) % bs
-    pad_w = (bs - (w % bs)) % bs
-    if pad_h or pad_w:
-        cur = np.pad(cur, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge')
-        prev = np.pad(prev, ((0, pad_h), (0, pad_w), (0, 0)), mode='edge')
-        
-    H, W, _ = cur.shape
-    bh, bw = H // bs, W // bs
+    # Calculate difference
+    diff = np.sum(np.abs(cur_arr - prev_arr), axis=2)
     
-    cur_blocks = cur.reshape(bh, bs, bw, bs, c)
-    prev_blocks = prev.reshape(bh, bs, bw, bs, c)
+    # Blockify the difference (simple average pooling simulation)
+    # If a pixel hasn't changed much, we keep the OLD pixel
+    mask = diff < threshold
     
-    # Difference calc
-    diff_blocks = np.sum(np.abs(cur_blocks - prev_blocks), axis=(1, 3, 4))
-    avg_blocks = diff_blocks / (bs * bs)
-    mask = avg_blocks < threshold
-    
-    if spread > 0:
-        expanded = mask.copy()
-        # Simple expansion loop
-        for y in range(bh):
-            for x in range(bw):
-                if mask[y, x]:
-                    y0, y1 = max(0, y-spread), min(bh, y+spread+1)
-                    x0, x1 = max(0, x-spread), min(bw, x+spread+1)
-                    expanded[y0:y1, x0:x1] = True
-        mask = expanded
-        
-    out = cur.copy()
-    # Apply smear
-    for by in range(bh):
-        y0, y1 = by * bs, (by + 1) * bs
-        for bx in range(bw):
-            if mask[by, bx]:
-                x0, x1 = bx * bs, (bx + 1) * bs
-                out[y0:y1, x0:x1] = prev[y0:y1, x0:x1]
-                
-    if pad_h or pad_w: out = out[:h, :w]
-    return Image.fromarray(out.astype("uint8"))
+    cur_arr[mask] = prev_arr[mask]
+    return Image.fromarray(cur_arr.astype('uint8'))
 
 # -------------------------
-# Processing Pipeline
+# Glitch State Manager
 # -------------------------
-def process(v1_frames, v2_frames, out_folder, settings):
-    os.makedirs(out_folder, exist_ok=True)
-    target_size = Image.open(v1_frames[0] if v1_frames else v2_frames[0]).size
-    prev_img = None
-    out_idx = 0
-    total_count = len(v1_frames) + len(v2_frames)
-    print(f"Processing ~{total_count} frames at {target_size}...")
+class GlitchManager:
+    """
+    Manages the 'Story' of the video. 
+    Instead of random noise every frame, effects have durations.
+    """
+    def __init__(self, settings):
+        self.s = settings
+        self.active_effects = {
+            'pixel_sort': 0,
+            'liquid': 0,
+            'rgb_split': 0,
+            'invert': 0,
+            'stutter': 0,
+            'mirror': 0
+        }
+        self.time_counter = 0.0
+        self.stutter_buffer = None
 
-    def open_rgb(path): return Image.open(path).convert("RGB")
+    def update(self):
+        """Called every frame to update state/dice rolls."""
+        self.time_counter += 0.2
+        
+        # Decrement active timers
+        for k in self.active_effects:
+            if self.active_effects[k] > 0:
+                self.active_effects[k] -= 1
 
-    for i in range(total_count):
-        # Frame selection
-        if i < len(v1_frames):
-            src = open_rgb(v1_frames[i])
-            frames_left = len(v1_frames) - i
-            transition_len = max(1, int(len(v1_frames) * settings["transition_fraction"]))
-            if frames_left <= transition_len and len(v2_frames) > 0:
-                tnorm = 1.0 - (frames_left / float(max(1, transition_len)))
-                v2_idx = min(len(v2_frames)-1, int(tnorm * (len(v2_frames)-1)))
-                img_v2 = open_rgb(v2_frames[v2_idx]).resize(src.size)
-                src = ImageChops.add(ImageChops.difference(src, img_v2), img_v2, scale=1.2, offset=-8)
-        else:
-            v2_idx = i - len(v1_frames)
-            if v2_idx >= len(v2_frames): break
-            src = open_rgb(v2_frames[v2_idx])
-
-        if src.size != target_size: src = src.resize(target_size)
-
-        # Effects
-        if prev_img is not None and random.random() < settings["frame_dup_chance"]:
-            prev_img.save(os.path.join(out_folder, f"frame_{out_idx:05d}.png"))
-            out_idx += 1
+        # Roll for new events (only if not already active)
+        if self.active_effects['pixel_sort'] == 0 and random.random() < self.s['prob_pixel_sort']:
+            self.active_effects['pixel_sort'] = random.randint(5, 20) # Lasts 5-20 frames
             
-        src = macroblock_smear(src, prev_img, settings["block_size"], settings["mosh_threshold"], settings["block_spread"])
-        if settings.get("enable_pixel_sort", True):
-            src = pixel_sort(src, settings["pixel_sort_chance"], settings["pixel_sort_band_div"])
-        if settings.get("enable_channel_shift", True):
-            src = channel_shift(src, 8, settings["channel_shift_chance"])
-        if settings.get("enable_jpeg_bloom", True):
-            src = jpeg_bloom(src, settings["jpeg_intensity"], settings["jpeg_passes"])
+        if self.active_effects['liquid'] == 0 and random.random() < self.s['prob_liquid']:
+            self.active_effects['liquid'] = random.randint(10, 40)
+            
+        if self.active_effects['rgb_split'] == 0 and random.random() < self.s['prob_rgb_split']:
+            self.active_effects['rgb_split'] = random.randint(2, 10)
 
-        src.save(os.path.join(out_folder, f"frame_{out_idx:05d}.png"))
-        prev_img = src.copy()
-        out_idx += 1
+        if self.active_effects['invert'] == 0 and random.random() < self.s['prob_invert']:
+            self.active_effects['invert'] = random.randint(1, 5) # Short flashes
+
+        if self.active_effects['stutter'] == 0 and random.random() < self.s['prob_stutter']:
+            self.active_effects['stutter'] = random.randint(3, 8)
+            self.stutter_buffer = None # Reset buffer
+
+        if self.active_effects['mirror'] == 0 and random.random() < self.s['prob_mirror']:
+            self.active_effects['mirror'] = random.randint(10, 30)
+
+    def apply(self, img):
+        """Applies active effects to the image."""
         
-        if out_idx % 50 == 0: print(f"Processed {out_idx} frames...", end='\r')
+        # Stutter (Time Freeze) - Must be first
+        if self.active_effects['stutter'] > 0:
+            if self.stutter_buffer is None:
+                self.stutter_buffer = img.copy()
+            return self.stutter_buffer # Return the frozen frame
+        
+        res = img
+        
+        # Liquid Melting
+        if self.active_effects['liquid'] > 0:
+            # Intensity fades in and out based on remaining duration
+            res = effect_liquid_displacement(res, self.s['intensity_liquid'], self.time_counter)
+
+        # Pixel Sort
+        if self.active_effects['pixel_sort'] > 0:
+            res = effect_pixel_sort(res)
+
+        # RGB Split
+        if self.active_effects['rgb_split'] > 0:
+            res = effect_rgb_split(res, self.s['intensity_rgb'])
+
+        # Invert Colors (Negative)
+        if self.active_effects['invert'] > 0:
+            res = ImageOps.invert(res)
+
+        # Mirroring (Kaleidoscope-ish)
+        if self.active_effects['mirror'] > 0:
+            res = ImageOps.mirror(res)
+
+        return res
 
 # -------------------------
-# Main
+# Main Workflow
 # -------------------------
+def run_ffmpeg(cmd):
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"FFmpeg Error: {e.stderr}")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--v1", default="input.mp4")
     parser.add_argument("--v2", default="image2.mp4")
-    parser.add_argument("--out", default="output_horrifying_mosh.mp4")
-    parser.add_argument("--fps", type=int, default=DEFAULTS["fps"])
-    parser.add_argument("--clean", action="store_true")
+    parser.add_argument("--out", default="output_psychedelic.mp4")
     
-    # New arguments for customization
-    parser.add_argument("--no-audio-glitch", action="store_true", help="Disable audio glitching")
-    parser.add_argument("--no-pixel-sort", action="store_true", help="Disable pixel sorting")
-    parser.add_argument("--no-jpeg-bloom", action="store_true", help="Disable JPEG bloom")
-    parser.add_argument("--no-channel-shift", action="store_true", help="Disable channel shift")
-    parser.add_argument("--mosh-threshold", type=float, default=DEFAULTS["mosh_threshold"], help="Mosh threshold")
-    parser.add_argument("--pixel-sort-chance", type=float, default=DEFAULTS["pixel_sort_chance"], help="Pixel sort chance")
-    
+    # Parameter Controls
+    parser.add_argument("--chaos", type=float, default=1.0, help="Multiplier for all probabilities")
+    parser.add_argument("--fps", type=int, default=24)
     args = parser.parse_args()
 
-    # Update settings based on arguments
+    # Scale probabilities by chaos factor
     settings = DEFAULTS.copy()
-    settings["enable_audio_glitch"] = not args.no_audio_glitch
-    settings["enable_pixel_sort"] = not args.no_pixel_sort
-    settings["enable_jpeg_bloom"] = not args.no_jpeg_bloom
-    settings["enable_channel_shift"] = not args.no_channel_shift
-    settings["mosh_threshold"] = args.mosh_threshold
-    settings["pixel_sort_chance"] = args.pixel_sort_chance
-    settings["fps"] = args.fps
+    for k in settings:
+        if k.startswith("prob_"):
+            settings[k] *= args.chaos
 
-    # Check Sanity
-    check_file_sanity(args.v1)
-    check_file_sanity(args.v2)
-
-    # Check if files are video
-    def is_video(path):
-        if not os.path.exists(path):
-            return False
-        rc, out, _ = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "default=nokey=1:noprint_wrappers=1", path])
-        return rc == 0 and out.strip() != ""
-
-    v1_is_video = is_video(args.v1)
-    v2_is_video = is_video(args.v2)
-    print(f"v1_is_video={v1_is_video}, v2_is_video={v2_is_video}")
-
-    # Paths
     t_v1, t_v2, t_out = "frames_v1", "frames_v2", "frames_out"
-    t_audio, temp_vid = "glitched_audio.aac", "temp_video.mp4"
+    t_audio, temp_vid = "audio.aac", "temp.mp4"
     
-    # Cleanup
-    for d in (t_v1, t_v2, t_out, t_audio, temp_vid):
-        if os.path.exists(d): 
-            if os.path.isdir(d): shutil.rmtree(d)
-            else: os.remove(d)
+    for d in [t_v1, t_v2, t_out]:
+        if os.path.exists(d): shutil.rmtree(d)
+        os.makedirs(d, exist_ok=True)
 
-    # Execute
     try:
-        if v1_is_video: extract_frames_with_ffmpeg(args.v1, t_v1, args.fps)
-        else: 
-            if not check_is_image(args.v1): raise RuntimeError(f"CRITICAL ERROR: {args.v1} is neither a video nor a valid image.")
-            image_fallback_generate_frames(args.v1, t_v1, args.fps)
+        # 1. Extract
+        print("Extracting frames...")
+        # Check files exist
+        if not os.path.exists(args.v1) or not os.path.exists(args.v2):
+            raise FileNotFoundError("Input files missing. Check Git LFS.")
 
-        if v2_is_video: extract_frames_with_ffmpeg(args.v2, t_v2, args.fps)
-        else:
-            if not check_is_image(args.v2): raise RuntimeError(f"CRITICAL ERROR: {args.v2} is neither a video nor a valid image.")
-            image_fallback_generate_frames(args.v2, t_v2, args.fps)
-
-        has_audio = False
-        if settings["enable_audio_glitch"]:
-            has_audio = extract_and_glitch_audio(args.v1, t_audio)
+        run_ffmpeg(["ffmpeg", "-i", args.v1, "-vf", f"fps={args.fps}", f"{t_v1}/frame_%05d.png"])
+        run_ffmpeg(["ffmpeg", "-i", args.v2, "-vf", f"fps={args.fps}", f"{t_v2}/frame_%05d.png"])
         
+        # Audio Extraction
+        has_audio = False
+        try:
+            run_ffmpeg(["ffmpeg", "-i", args.v1, "-vn", "-c:a", "aac", t_audio])
+            has_audio = True
+        except:
+            pass
+
+        # 2. Process
         files_v1 = sorted([os.path.join(t_v1, f) for f in os.listdir(t_v1) if f.endswith(".png")])
         files_v2 = sorted([os.path.join(t_v2, f) for f in os.listdir(t_v2) if f.endswith(".png")])
         
-        process(files_v1, files_v2, t_out, settings)
+        total_frames = len(files_v1) + len(files_v2)
+        print(f"Processing {total_frames} frames with Event System...")
         
-        # Assemble
-        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(args.fps),
-             "-i", os.path.join(t_out, "frame_%05d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", temp_vid])
+        # Initialize Logic
+        gm = GlitchManager(settings)
+        previous_img = None
         
-        # Mux
-        if has_audio and os.path.exists(t_audio):
-            run(["ffmpeg", "-y", "-i", temp_vid, "-i", t_audio, "-c:v", "copy", "-c:a", "aac", "-shortest", args.out])
-        else:
-            os.replace(temp_vid, args.out)
+        # Get target size
+        with Image.open(files_v1[0]) as ref: target_size = ref.size
+
+        for i in range(total_frames):
+            print(f"Rendering {i}/{total_frames}", end='\r')
             
-        print(f"Success! {args.out}")
+            # --- Source Mixing Logic ---
+            if i < len(files_v1):
+                src = Image.open(files_v1[i]).convert("RGB")
+                
+                # Transition Blend
+                left = len(files_v1) - i
+                trans_len = int(len(files_v1) * settings['transition_fraction'])
+                
+                if left < trans_len and files_v2:
+                    # Map to V2
+                    idx2 = int((1 - (left/trans_len)) * (len(files_v2)-1))
+                    src2 = Image.open(files_v2[idx2]).convert("RGB").resize(src.size)
+                    # Use Difference blend for transition (Trippy)
+                    src = ImageChops.difference(src, src2)
+            else:
+                idx = i - len(files_v1)
+                if idx >= len(files_v2): break
+                src = Image.open(files_v2[idx]).convert("RGB")
+
+            # Enforce size
+            if src.size != target_size: src = src.resize(target_size)
+
+            # --- Update & Apply Glitch State ---
+            gm.update()
+            
+            # 1. Apply Datamosh Smearing (P-Frame simulation)
+            # This runs ALWAYS to maintain the "mosh" feel
+            src = macroblock_smear(src, previous_img)
+            
+            # 2. Apply Event-Based Effects
+            src = gm.apply(src)
+            
+            src.save(f"{t_out}/frame_{i:05d}.png")
+            previous_img = src.copy()
+
+        # 3. Reassemble
+        print("\nReassembling...")
+        run_ffmpeg(["ffmpeg", "-y", "-framerate", str(args.fps), "-i", f"{t_out}/frame_%05d.png", 
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", temp_vid])
+        
+        # 4. Audio Destruction
+        if has_audio:
+            filter_chain = get_random_audio_filter()
+            print(f"Applying Audio Chain: {filter_chain}")
+            run_ffmpeg(["ffmpeg", "-y", "-i", temp_vid, "-i", t_audio, 
+                        "-af", filter_chain, 
+                        "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", 
+                        "-shortest", args.out])
+        else:
+            os.rename(temp_vid, args.out)
+            
+        print(f"Done: {args.out}")
 
     except Exception as e:
-        print(e)
-        sys.exit(1)
+        print(f"Error: {e}")
+        exit(1)
     finally:
-        if args.clean:
-            shutil.rmtree(t_v1, ignore_errors=True)
-            shutil.rmtree(t_v2, ignore_errors=True)
-            shutil.rmtree(t_out, ignore_errors=True)
+        # Cleanup
+        for d in [t_v1, t_v2, t_out]: 
+            if os.path.exists(d): shutil.rmtree(d)
+        if os.path.exists(t_audio): os.remove(t_audio)
+        if os.path.exists(temp_vid): os.remove(temp_vid)
 
 if __name__ == "__main__":
     main()
