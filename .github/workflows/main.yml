@@ -22,7 +22,7 @@ jobs:
 
       - name: Generate Glitch Art (Abrasive Run)
         run: |
-          python script.py \
+          script.py \
             --v1 input.mp4 \
             --v2 image2.mp4 \
             --out output_neo_final.mp4 \
