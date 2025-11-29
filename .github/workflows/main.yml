@@ -1,31 +1,18 @@
-name: Abrasive Datamosh
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  mosh:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          lfs: true # CRITICAL: Downloads real video data
-
-      - name: Setup Environment
+- name: Generate Glitch Art (Abrasive Run)
+        # Use the actual file names from the repository and crank the intensity
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install -r requirements.txt
-
-      - name: Generate Glitch Art
-        run: python script.py
+          python script.py \
+            --v1 input.mp4 \
+            --v2 image2.mp4 \
+            --out output_neo_final.mp4 \
+            --drag 2.5 \
+            --chaos 2.0 \
+            --block-size 16
 
       - name: Upload Result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: abrasive_output
-          path: output_abrasive.mp4
+          path: output_neo_final.mp4
           retention-days: 5
