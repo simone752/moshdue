@@ -1,7 +1,7 @@
 - name: Generate Glitch Art (Abrasive Run)
         # Use the actual file names from the repository and crank the intensity
         run: |
-          script.py \
+          python script.py \
             --v1 input.mp4 \
             --v2 image2.mp4 \
             --out output_neo_final.mp4 \
