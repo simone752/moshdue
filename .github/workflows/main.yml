@@ -1,4 +1,4 @@
-name: Psychedelic Datamosh
+name: Abrasive Datamosh
 
 on:
   push:
@@ -11,29 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          lfs: true # Essential for video files
+          lfs: true # CRITICAL: Downloads real video data
 
-      - name: Install System Deps
+      - name: Setup Environment
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
 
-      - name: Install Python Deps
-        run: pip install -r requirements.txt
+      - name: Generate Glitch Art
+        run: python script.py
 
-      - name: Run Script (Standard Chaos)
-        run: python script.py --out standard_output.mp4
-
-      - name: Run Script (Extreme Chaos)
-        # We run it again with a high chaos multiplier for variety
-        run: python script.py --chaos 3.0 --out extreme_output.mp4
-
-      - name: Upload Artifacts
+      - name: Upload Result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: datamosh_results
-          path: |
-            standard_output.mp4
-            extreme_output.mp4
+          name: abrasive_output
+          path: output_abrasive.mp4
           retention-days: 5
