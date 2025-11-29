@@ -45,28 +45,28 @@ jobs:
         
 # ... (Passaggi 1-5, inclusi il setup di FFmpeg e il Run Smoke Test)
 
-- name: 6. Run Processing and Generate Output
-  run: |
-    # 6a. Crea due file video di input fittizi (2 secondi di colore solido)
-    echo "Creating dummy input videos..."
-    ffmpeg -y -f lavfi -i color=c=blue:s=128x72:d=2 -pix_fmt yuv420p v1_dummy.mp4
-    ffmpeg -y -f lavfi -i color=c=red:s=128x72:d=2 -pix_fmt yuv420p v2_dummy.mp4
+    - name: 6. Run Processing and Generate Output
+      run: |
+        # 6a. Crea due file video di input fittizi (2 secondi di colore solido)
+        echo "Creating dummy input videos..."
+        ffmpeg -y -f lavfi -i color=c=blue:s=128x72:d=2 -pix_fmt yuv420p v1_dummy.mp4
+        ffmpeg -y -f lavfi -i color=c=red:s=128x72:d=2 -pix_fmt yuv420p v2_dummy.mp4
     
-    # 6b. Esegue lo script con i file fittizi per generare output_neo.mp4
-    echo "Running script.py to generate output..."
-    python script.py --v1 v1_dummy.mp4 --v2 v2_dummy.mp4 --out output_neo.mp4 --drag 2.0
+        # 6b. Esegue lo script con i file fittizi per generare output_neo.mp4
+        echo "Running script.py to generate output..."
+        python script.py --v1 v1_dummy.mp4 --v2 v2_dummy.mp4 --out output_neo.mp4 --drag 2.0
     
-    # 6c. Verifica che il file sia stato effettivamente creato
-    if [ -f "output_neo.mp4" ]; then
-      echo "SUCCESS: output_neo.mp4 created."
-    else
-      echo "FAILURE: output_neo.mp4 not found."
-      exit 1
-    fi
+        # 6c. Verifica che il file sia stato effettivamente creato
+        if [ -f "output_neo.mp4" ]; then
+          echo "SUCCESS: output_neo.mp4 created."
+        else
+          echo "FAILURE: output_neo.mp4 not found."
+          exit 1
+        fi
 
-- name: 7. Upload Video Output (Artifact)
-  uses: actions/upload-artifact@v4
-  with:
-    name: datamosh-output-video
-    path: output_neo.mp4
+    - name: 7. Upload Video Output (Artifact)
+      uses: actions/upload-artifact@v4
+      with:
+        name: datamosh-output-video
+        path: output_neo.mp4
 
