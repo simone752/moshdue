@@ -1,5 +1,26 @@
-- name: Generate Glitch Art (Abrasive Run)
-        # Use the actual file names from the repository and crank the intensity
+name: Glitch Art Generator
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Generate Glitch Art (Abrasive Run)
         run: |
           python script.py \
             --v1 input.mp4 \
@@ -16,3 +37,4 @@
           name: abrasive_output
           path: output_neo_final.mp4
           retention-days: 5
+
