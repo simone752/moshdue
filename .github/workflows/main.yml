@@ -1,40 +1,39 @@
-name: Datamosh Video Processing
+name: Psychedelic Datamosh
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  run-datamosh:
+  mosh:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          lfs: true  # <--- THIS IS REQUIRED TO DOWNLOAD ACTUAL VIDEO FILES
+          lfs: true # Essential for video files
 
-      - name: Install System Dependencies
+      - name: Install System Deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install Python Dependencies
-        run: pip install pillow numpy
+      - name: Install Python Deps
+        run: pip install -r requirements.txt
 
-      - name: Debug File Sizes
-        # This will verify if the files are real videos (MBs) or pointers (Bytes)
-        run: ls -lh input.mp4 image2.mp4
+      - name: Run Script (Standard Chaos)
+        run: python script.py --out standard_output.mp4
 
-      - name: Run Datamosh Script
-        run: python script.py
+      - name: Run Script (Extreme Chaos)
+        # We run it again with a high chaos multiplier for variety
+        run: python script.py --chaos 3.0 --out extreme_output.mp4
 
-      - name: Upload Output Video
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: horrifying_datamosh_result
-          path: output_horrifying_mosh.mp4
+          name: datamosh_results
+          path: |
+            standard_output.mp4
+            extreme_output.mp4
           retention-days: 5
