@@ -1,15 +1,15 @@
-name: Abstract Datamosh
+name: Hyper-Fast Datamosh
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  mosh:
+  fast-mosh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           lfs: true
 
@@ -19,27 +19,23 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install -r requirements.txt
 
-      - name: Run 1 (High Drag)
+      - name: Generate
         run: |
+          # Verify files
+          ls -lh input.mp4 image2.mp4
+          
+          # Run the new optimized engine
+          # High drag for melting, High chaos for colors
           python script.py \
             --v1 input.mp4 --v2 image2.mp4 \
-            --out output_drag.mp4 \
-            --drag 1.05 --chaos 1.0
-
-      - name: Run 2 (High Chaos)
-        run: |
-          python script.py \
-            --v1 input.mp4 --v2 image2.mp4 \
-            --out output_chaos.mp4 \
-            --drag 0.9 --chaos 2.5
+            --out output_hyper.mp4 \
+            --drag 1.2 --chaos 1.5
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: abstract_results
-          path: |
-            output_drag.mp4
-            output_chaos.mp4
+          name: hyper-result
+          path: output_hyper.mp4
           retention-days: 5
 
