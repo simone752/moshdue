@@ -1,72 +1,45 @@
-name: Python CI per Neo-Ludovico
+name: Abstract Datamosh
 
-# Si attiva ad ogni push o pull request sul branch 'main'
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  build-and-test:
-    # Esegue su un server Ubuntu standard di GitHub
+  mosh:
     runs-on: ubuntu-latest
-
     steps:
-    # 1. Scarica il codice dal repository
-    - name: 1. Check out repository
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v3
+        with:
+          lfs: true
 
-    # 2. Imposta l'ambiente Python
-    - name: 2. Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip' # Abilita la cache per velocizzare le installazioni future
+      - name: Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
 
-    # 3. INSTALLA FFMPEG (La dipendenza di sistema)
-    # Questo è il passaggio più importante per il tuo script
-    - name: 3. Install FFmpeg
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
+      - name: Run 1 (High Drag)
+        run: |
+          python script.py \
+            --v1 input.mp4 --v2 image2.mp4 \
+            --out output_drag.mp4 \
+            --drag 1.05 --chaos 1.0
 
-    # 4. Installa le dipendenze Python
-    - name: 4. Install Python Dependencies
-      run: |
-        pip install -r requirements.txt
+      - name: Run 2 (High Chaos)
+        run: |
+          python script.py \
+            --v1 input.mp4 --v2 image2.mp4 \
+            --out output_chaos.mp4 \
+            --drag 0.9 --chaos 2.5
 
-    # 5. "Smoke Test": verifica che lo script si avvii
-    # Esegue lo script con --help. Se fallisce, c'è un errore
-    # di sintassi o di importazione, e l'azione fallirà.
-    - name: 5. Run Smoke Test (Check imports and help)
-      run: |
-        python script.py --help    
-        
-# ... (Passaggi 1-5, inclusi il setup di FFmpeg e il Run Smoke Test)
-
-    - name: 6. Run Processing and Generate Output
-      run: |
-        # 6a. Crea due file video di input fittizi (2 secondi di colore solido)
-        echo "Creating dummy input videos..."
-        ffmpeg -y -f lavfi -i color=c=blue:s=128x72:d=2 -pix_fmt yuv420p v1_dummy.mp4
-        ffmpeg -y -f lavfi -i color=c=red:s=128x72:d=2 -pix_fmt yuv420p v2_dummy.mp4
-    
-        # 6b. Esegue lo script con i file fittizi per generare output_neo.mp4
-        echo "Running script.py to generate output..."
-        python script.py --v1 v1_dummy.mp4 --v2 v2_dummy.mp4 --out output_neo.mp4 --drag 2.0
-    
-        # 6c. Verifica che il file sia stato effettivamente creato
-        if [ -f "output_neo.mp4" ]; then
-          echo "SUCCESS: output_neo.mp4 created."
-        else
-          echo "FAILURE: output_neo.mp4 not found."
-          exit 1
-        fi
-
-    - name: 7. Upload Video Output (Artifact)
-      uses: actions/upload-artifact@v4
-      with:
-        name: datamosh-output-video
-        path: output_neo.mp4
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: abstract_results
+          path: |
+            output_drag.mp4
+            output_chaos.mp4
+          retention-days: 5
 
