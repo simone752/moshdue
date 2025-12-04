@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
-# HYPER-LUDOVICO: Procedural Decay Engine
+# HYPER-LUDOVICO: FAST ABSTRACT ENGINE
 # -----------------------------------------------------------------------------
-# Generates structured, narrative glitch art with stateful effects.
-# 
-# Features:
-# - Stateful Glitch Entities (Duration-based effects)
-# - "Ghosting" Feedback Loop (Long-term frame persistence)
-# - Adaptive Palette Crushing
-# - Temporal Stuttering
+# Speed: ~10x faster (Processes at 240p, Upscales to 720p)
+# Style: Abstract, melting P-frames, blocky glitches, color drifts.
 # -----------------------------------------------------------------------------
 
 import os
@@ -19,325 +14,255 @@ import random
 import argparse
 import tempfile
 import time
-import math
 import numpy as np
 import cv2
 
-# -------------------- DEFAULT CONFIG --------------------
+# -------------------- CONFIG --------------------
+# Base settings - randomized at runtime
 SETTINGS = {
     "fps": 24,
-    "internal_res": (640, 360), # Low res = Crunchier glitches + Speed
+    "internal_res": (426, 240), # 240p = Blocky & Insanely Fast
     
-    # --- MOSH PHYSICS ---
-    "mosh_threshold": 12,       # Sensitivity to motion (Lower = More Smear)
-    "drag_momentum": 0.92,      # How much smear persists (0.0 - 1.0)
-    "block_size": 16,           # Macroblock size
-    
-    # --- GHOSTING (Long Exposure) ---
-    "ghost_decay": 0.85,        # How fast the "ghost" layer fades (Lower = Faster)
-    "ghost_mix": 0.3,           # Visibility of the ghost layer
-    
-    # --- CHAOS PROBABILITIES (Per Frame spawn chance) ---
-    "prob_stutter": 0.02,       # Chance to freeze/stutter time
-    "prob_melt": 0.015,         # Chance to start a "Liquid Melt" event
-    "prob_crush": 0.01,         # Chance to start a "Palette Crush" event
-    "prob_invert": 0.005,       # Chance to flash negative
+    # Physics
+    "threshold": 25,      # High = More Drag/Smear
+    "decay": 0.98,        # How long trails last (0.0 - 1.0)
+    "zoom_drift": 1.01,   # The "melting" forward movement
 }
 
-# -------------------- HELPERS --------------------
+# -------------------- AUDIO FX --------------------
+def get_abrasive_audio_filter():
+    """Generates a random, fast-rendering audio chain."""
+    chains = [
+        # Bitcrush
+        "acrusher=bits=4:mode=log:aa=1, volume=1.5",
+        # Haunted Reverb
+        "aecho=0.8:0.9:500:0.3, lowpass=f=800",
+        # Broken Radio
+        "highpass=f=300, lowpass=f=3000, vibrato=f=10:d=0.5",
+        # Deep Fried
+        "treble=g=10, bass=g=10, acrusher=level_in=1:level_out=1:bits=8:mode=log:aa=1",
+    ]
+    return random.choice(chains)
 
-def run_ffmpeg(cmd):
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg Error: {e.stderr}", file=sys.stderr)
-        raise
+# -------------------- FAST VISUAL FX --------------------
 
-def get_audio_filter(intensity=1.0):
-    """Generates a randomized, abrasive audio chain."""
-    # Randomly select a "flavor" of audio destruction
-    flavor = random.choice(['void', 'shred', 'demon'])
+def fast_color_jitter(img, intensity=10):
+    """Drifts RGB channels using array slicing (Instant)."""
+    h, w, c = img.shape
+    dx = random.randint(-intensity, intensity)
+    dy = random.randint(-intensity, intensity)
     
-    if flavor == 'void':
-        return "aecho=0.8:0.9:1000:0.3, lowpass=f=400, volume=1.2"
-    elif flavor == 'shred':
-        return f"acrusher=level_in=8:level_out=18:bits={random.randint(2,6)}:mode=log:aa=1, tremolo=f=12:d=0.8"
-    else: # demon
-        return "asetrate=44100*0.8, aresample=44100, aecho=0.8:0.8:40:0.5"
-
-# -------------------- VISUAL FX ENGINES --------------------
-
-def quantized_optical_flow(prev_gray, curr_gray, block_size=16):
-    """Calculates Optical Flow snapped to a grid (Block Drag)."""
-    h, w = prev_gray.shape
-    flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    # Create output
+    out = img.copy()
     
-    # Downscale flow to block size to simulate macroblocks
-    small_flow = cv2.resize(flow, (w // block_size, h // block_size), interpolation=cv2.INTER_NEAREST)
-    block_flow = cv2.resize(small_flow, (w, h), interpolation=cv2.INTER_NEAREST)
+    # Roll channels (Cyclic shift) - Super fast
+    # Blue Channel Drift
+    out[:, :, 0] = np.roll(out[:, :, 0], dx, axis=1)
+    out[:, :, 0] = np.roll(out[:, :, 0], dy, axis=0)
     
-    # Create remap coordinates
-    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
-    map_x = (map_x - block_flow[..., 0]).astype(np.float32)
-    map_y = (map_y - block_flow[..., 1]).astype(np.float32)
-    return map_x, map_y
+    return out
 
-def liquid_melt(img, time_step, intensity=10):
+def fast_pixel_shuffle(img, intensity=0.1):
+    """Takes random blocks and shuffles them. Cheaper than sorting."""
+    h, w, c = img.shape
+    if random.random() > intensity: return img
+    
+    # Extract a random slice
+    y = random.randint(0, h-20)
+    h_slice = random.randint(10, 50)
+    
+    # Reverse the slice horizontally
+    img[y:y+h_slice, :, :] = img[y:y+h_slice, ::-1, :]
+    return img
+
+def apply_feedback_warp(prev_img, zoom, rotate):
     """
-    Applies a sine-wave displacement to create a melting effect.
-    Vectorized using remap for speed.
+    The Core "Melt" Mechanic. 
+    Instead of flow, we just slightly zoom/rotate the previous frame.
     """
-    h, w, _ = img.shape
-    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    h, w = prev_img.shape[:2]
+    center = (w // 2, h // 2)
     
-    # Create wavy displacement
-    displacement = np.sin(map_y / 20.0 + time_step) * intensity
-    map_x = (map_x + displacement).astype(np.float32)
+    # Create Affine Matrix
+    M = cv2.getRotationMatrix2D(center, rotate, zoom)
     
-    return cv2.remap(img, map_x, map_y.astype(np.float32), interpolation=cv2.INTER_LINEAR)
+    # Apply Warp (Linear for smoothness in trails)
+    return cv2.warpAffine(prev_img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-def palette_crush(img, mode='neon'):
-    """
-    Remaps image colors to a restricted, aggressive palette.
-    """
-    # Convert to HSV
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
+# -------------------- PROCESSOR --------------------
+
+def process_video(v1_path, v2_path, out_path, drag_mult, chaos_mult):
+    # 1. RANDOMIZE SESSION
+    seed = random.randint(0, 9999)
+    random.seed(seed)
+    print(f">>> SEED: {seed}")
     
-    if mode == 'neon':
-        # Boost Saturation, Quantize Hue to Cyan/Magenta
-        h = np.where(h > 90, 150, 30).astype(np.uint8) # Magenta / Yellow
-        s = np.clip(s * 1.5, 0, 255).astype(np.uint8)
-    elif mode == 'rot':
-        # Dark Red/Green
-        h = np.where(h > 100, 60, 0).astype(np.uint8) 
-        v = np.clip(v * 0.8, 0, 255).astype(np.uint8)
+    # Mutate Settings
+    s = SETTINGS.copy()
+    s['threshold'] = int(s['threshold'] * drag_mult)
+    s['zoom_drift'] = 1.0 + (random.uniform(-0.02, 0.03) * chaos_mult)
+    rotate_drift = random.uniform(-1, 1) * chaos_mult
     
-    final = cv2.merge([h, s, v])
-    return cv2.cvtColor(final, cv2.COLOR_HSV2BGR)
-
-# -------------------- GLITCH STATE MACHINE --------------------
-
-class GlitchDirector:
-    """
-    Manages the 'Story' of the glitches. 
-    Spawns events that persist over time.
-    """
-    def __init__(self, settings):
-        self.s = settings
-        self.active_events = {}
-        self.frame_count = 0
-        self.palette_mode = None
-        self.stutter_buffer = None
-        self.stutter_frames_left = 0
-
-    def update(self):
-        self.frame_count += 1
-        
-        # 1. Spawn Events
-        if random.random() < self.s['prob_melt'] and 'melt' not in self.active_events:
-            # Spawn Melt: Lasts 20-60 frames
-            self.active_events['melt'] = {'start': self.frame_count, 'duration': random.randint(20, 60)}
-            
-        if random.random() < self.s['prob_crush'] and 'crush' not in self.active_events:
-            # Spawn Crush: Lasts 10-40 frames
-            self.active_events['crush'] = {'start': self.frame_count, 'duration': random.randint(10, 40)}
-            self.palette_mode = random.choice(['neon', 'rot'])
-
-        if random.random() < self.s['prob_stutter'] and self.stutter_frames_left == 0:
-            # Start Stutter
-            self.stutter_frames_left = random.randint(3, 8)
-            self.stutter_buffer = None # Will grab next frame
-
-        # 2. Cleanup Dead Events
-        ended = []
-        for name, data in self.active_events.items():
-            if self.frame_count > data['start'] + data['duration']:
-                ended.append(name)
-        for name in ended:
-            del self.active_events[name]
-
-    def apply(self, img):
-        out = img
-        
-        # --- STUTTER (Time Freeze) ---
-        if self.stutter_frames_left > 0:
-            if self.stutter_buffer is None:
-                self.stutter_buffer = out.copy()
-            
-            # Degrade the stutter buffer slightly each frame (Bitrot)
-            noise = np.random.normal(0, 5, self.stutter_buffer.shape).astype(np.uint8)
-            self.stutter_buffer = cv2.add(self.stutter_buffer, noise)
-            
-            out = self.stutter_buffer
-            self.stutter_frames_left -= 1
-            return out # Return early, freeze frame ignores other logic
-
-        # --- MELT ---
-        if 'melt' in self.active_events:
-            # Calculate intensity curve (Ease in/out)
-            elapsed = self.frame_count - self.active_events['melt']['start']
-            duration = self.active_events['melt']['duration']
-            # Parabolic curve for intensity (starts 0, peaks, ends 0)
-            intensity = 20 * math.sin((elapsed / duration) * math.pi)
-            out = liquid_melt(out, self.frame_count * 0.1, intensity)
-
-        # --- PALETTE CRUSH ---
-        if 'crush' in self.active_events:
-            out = palette_crush(out, self.palette_mode)
-
-        # --- INSTANT FLASHES ---
-        if random.random() < self.s['prob_invert']:
-            out = cv2.bitwise_not(out)
-
-        return out
-
-# -------------------- MAIN PROCESSOR --------------------
-
-def process_video(v1_path, v2_path, out_path, settings):
-    print(">>> INITIALIZING HYPER-LUDOVICO ENGINE...")
+    # Randomize Color Mapping
+    color_map = [0, 1, 2] # BGR
+    if random.random() < (0.3 * chaos_mult):
+        random.shuffle(color_map) # Randomize channel order (Psychedelic)
     
+    print(f" -> Zoom: {s['zoom_drift']:.3f} | Rotate: {rotate_drift:.2f}")
+    print(f" -> Channels: {color_map}")
+
+    # Temp workspace
     tmp = tempfile.mkdtemp()
+    
     try:
-        # 1. EXTRACT FRAMES
-        w, h = settings['internal_res']
-        print(f" -> Extracting frames ({w}x{h})...")
+        # 1. EXTRACT (Fast BMP sequence at 240p)
+        w, h = s['internal_res']
+        print(" -> Extracting low-res frames...")
         
-        run_ffmpeg(["ffmpeg", "-y", "-i", v1_path, "-vf", f"fps={settings['fps']},scale={w}:{h}", f"{tmp}/f1_%05d.bmp"])
-        run_ffmpeg(["ffmpeg", "-y", "-i", v2_path, "-vf", f"fps={settings['fps']},scale={w}:{h}", f"{tmp}/f2_%05d.bmp"])
+        # We define the command list properly to avoid syntax errors
+        cmd_v1 = [
+            "ffmpeg", "-y", "-i", v1_path, 
+            "-vf", f"fps={s['fps']},scale={w}:{h}", 
+            f"{tmp}/f1_%05d.bmp"
+        ]
+        subprocess.run(cmd_v1, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        f1_list = sorted([f for f in os.listdir(tmp) if f.startswith("f1_")])
-        f2_list = sorted([f for f in os.listdir(tmp) if f.startswith("f2_")])
+        cmd_v2 = [
+            "ffmpeg", "-y", "-i", v2_path, 
+            "-vf", f"fps={s['fps']},scale={w}:{h}", 
+            f"{tmp}/f2_%05d.bmp"
+        ]
+        subprocess.run(cmd_v2, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        f1_files = sorted([f for f in os.listdir(tmp) if f.startswith("f1_")])
+        f2_files = sorted([f for f in os.listdir(tmp) if f.startswith("f2_")])
         
-        if not f1_list: raise Exception("Extraction failed.")
+        if not f1_files: raise Exception("Input 1 failed to extract.")
         
-        total_frames = len(f1_list) + len(f2_list)
-        print(f" -> Processing {total_frames} frames...")
+        total_frames = len(f1_files) + len(f2_files)
         
-        # State & Director
-        director = GlitchDirector(settings)
-        prev_processed = None
-        prev_gray = None
-        ghost_buffer = None # Stores the accumulated "Ghost" layer
-        
+        # 2. FAST PROCESSING LOOP
+        prev_frame = None
         out_dir = os.path.join(tmp, "out")
         os.makedirs(out_dir, exist_ok=True)
         
+        # Pre-calculate threshold mask for speed
+        thresh_val = s['threshold']
+        decay_val = s['decay']
+        
+        print(f" -> Moshing {total_frames} frames...")
+        
         for i in range(total_frames):
-            if i % 20 == 0: print(f"Rendering: {i}/{total_frames}...", end='\r')
+            if i % 50 == 0: print(f"    Frame {i}/{total_frames}...", end='\r')
             
-            # --- SOURCE SELECTION ---
-            if i < len(f1_list):
-                curr = cv2.imread(os.path.join(tmp, f1_list[i]))
-                # Transition Logic
-                left = len(f1_list) - i
-                trans_len = int(len(f1_list) * 0.2) # 20% transition
-                if left < trans_len and f2_list:
-                    idx2 = int((1 - (left/trans_len)) * (len(f2_list)-1))
-                    alt = cv2.imread(os.path.join(tmp, f2_list[idx2]))
-                    if alt is not None: curr = cv2.absdiff(curr, alt)
+            # --- Source Logic (Linear Mix) ---
+            if i < len(f1_files):
+                curr = cv2.imread(os.path.join(tmp, f1_files[i]))
+                # Check transition
+                if f2_files and i > len(f1_files) * 0.8:
+                    # Quick Blend at end of clip 1
+                    idx2 = random.randint(0, len(f2_files)-1)
+                    alt = cv2.imread(os.path.join(tmp, f2_files[idx2]))
+                    curr = cv2.addWeighted(curr, 0.7, alt, 0.3, 0)
             else:
-                idx = i - len(f1_list)
-                if idx >= len(f2_list): break
-                curr = cv2.imread(os.path.join(tmp, f2_list[idx]))
+                idx = i - len(f1_files)
+                if idx >= len(f2_files): break
+                curr = cv2.imread(os.path.join(tmp, f2_files[idx]))
 
             if curr is None: continue
-            curr_gray = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
             
-            # --- PIXEL DRAG (The Mosh) ---
-            if prev_processed is None:
-                mosh_layer = curr
+            # Apply Color Scramble (Psychedelic)
+            curr = curr[:, :, color_map]
+
+            # --- THE ABSTRACT MOSH (Vectorized) ---
+            if prev_frame is None:
+                final = curr
             else:
-                map_x, map_y = quantized_optical_flow(prev_gray, curr_gray, settings['block_size'])
-                warped_prev = cv2.remap(prev_processed, map_x, map_y, interpolation=cv2.INTER_NEAREST)
+                # 1. Mutate Previous Frame (The "Melt")
+                # Instead of optical flow, we just Zoom/Rotate the ghost trail
+                ghost = apply_feedback_warp(prev_frame, s['zoom_drift'], rotate_drift)
                 
-                diff = cv2.absdiff(curr, warped_prev)
+                # 2. Calculate Difference (Vectorized)
+                # Euclidean distance in color space
+                diff = cv2.absdiff(curr, ghost)
                 diff_mag = np.sum(diff, axis=2)
                 
-                mask = diff_mag < settings['mosh_threshold']
-                mask_3ch = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+                # 3. Create Mask (Where did the image NOT change much?)
+                # This keeps the ghost trail in static areas
+                mask = diff_mag < thresh_val
                 
-                mosh_layer = np.where(mask_3ch, 
-                                 cv2.addWeighted(warped_prev, settings['drag_momentum'], curr, 1-settings['drag_momentum'], 0), 
-                                 curr)
+                # 4. Composite (Fast Boolean Indexing)
+                # If mask is true, use Ghost. Else use Current.
+                mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+                
+                # Blend ghost with decay to prevent total whiteout
+                ghost_decayed = cv2.addWeighted(ghost, decay_val, curr, 1-decay_val, 0)
+                
+                final = np.where(mask_3d, ghost_decayed, curr)
 
-            # --- GHOSTING (The Feedback Loop) ---
-            if ghost_buffer is None:
-                ghost_buffer = np.float32(mosh_layer)
-            else:
-                # Accumulate current mosh layer into ghost buffer
-                cv2.accumulateWeighted(mosh_layer, ghost_buffer, 1.0 - settings['ghost_decay'])
-            
-            # Blend Ghost back onto Mosh
-            ghost_uint8 = cv2.convertScaleAbs(ghost_buffer)
-            final = cv2.addWeighted(mosh_layer, 1.0, ghost_uint8, settings['ghost_mix'], 0)
+            # --- FAST CHAOS ---
+            # 1. RGB Drift (cheap)
+            if random.random() < (0.1 * chaos_mult):
+                final = fast_color_jitter(final, int(5 * chaos_mult))
+                
+            # 2. Negative Flash (cheap)
+            if random.random() < (0.02 * chaos_mult):
+                final = cv2.bitwise_not(final)
+                
+            # 3. Slice Shuffle (cheap)
+            if random.random() < (0.05 * chaos_mult):
+                final = fast_pixel_shuffle(final)
 
-            # --- DIRECTOR EFFECTS (Melt, Crush, Stutter) ---
-            director.update()
-            final = director.apply(final)
-
-            # Save & Update State
+            # Save as BMP (Fastest IO)
             cv2.imwrite(f"{out_dir}/frame_{i:05d}.bmp", final)
-            prev_processed = final.copy()
-            prev_gray = curr_gray.copy()
+            prev_frame = final
 
-        # ---------------- ASSEMBLY ----------------
-        print("\n -> Encoding...")
-        temp_vid = os.path.join(tmp, "temp_render.mp4")
+        # 3. RENDER & UPSCALING
+        print("\n -> Rendering...")
+        temp_vid = os.path.join(tmp, "temp.mp4")
         
-        run_ffmpeg([
-            "ffmpeg", "-y", "-framerate", str(settings['fps']),
+        # Upscale 240p -> 720p using Nearest Neighbor
+        # This keeps the blocks sharp and creates the "Digital Artifact" look
+        cmd_render = [
+            "ffmpeg", "-y", "-framerate", str(s['fps']),
             "-i", f"{out_dir}/frame_%05d.bmp",
-            "-vf", "scale=1280:720:flags=neighbor", 
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-vf", "scale=1280:720:flags=neighbor",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-pix_fmt", "yuv420p",
             temp_vid
-        ])
+        ]
+        subprocess.run(cmd_render, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Audio
-        has_audio = False
+        # 4. AUDIO DESTRUCTION
+        print(" -> Muxing Audio...")
         try:
-            run_ffmpeg(["ffmpeg", "-y", "-i", v1_path, "-vn", "-c:a", "aac", f"{tmp}/audio.aac"])
-            has_audio = True
-        except: pass
-        
-        if has_audio:
-            print(" -> Audio Destruction...")
-            # Use random intensity for filter generation
-            flt = get_audio_filter()
-            run_ffmpeg([
-                "ffmpeg", "-y", "-i", temp_vid, "-i", f"{tmp}/audio.aac",
-                "-af", flt,
-                "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest", out_path
-            ])
-        else:
-            shutil.move(temp_vid, out_path)
+            # Extract
+            subprocess.run(["ffmpeg", "-y", "-i", v1_path, "-vn", "-c:a", "aac", f"{tmp}/audio.aac"], 
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-        print(f"COMPLETE: {out_path}")
+            # Glitch
+            af = get_abrasive_audio_filter()
+            cmd_mux = [
+                "ffmpeg", "-y", "-i", temp_vid, "-i", f"{tmp}/audio.aac",
+                "-af", af, "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
+                "-shortest", out_path
+            ]
+            subprocess.run(cmd_mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except:
+            # Fallback if no audio
+            shutil.move(temp_vid, out_path)
+
+        print(f"DONE: {out_path}")
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-# -------------------- CLI --------------------
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hyper-Ludovico Datamosher")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--v1", required=True)
     parser.add_argument("--v2", required=True)
-    parser.add_argument("--out", default="output_hyper.mp4")
-    
-    # Modifiers
-    parser.add_argument("--drag", type=float, default=1.0, help="Pixel drag intensity (default: 1.0)")
-    parser.add_argument("--chaos", type=float, default=1.0, help="Glitch frequency (default: 1.0)")
-    
+    parser.add_argument("--out", default="output.mp4")
+    parser.add_argument("--drag", type=float, default=1.0)
+    parser.add_argument("--chaos", type=float, default=1.0)
     args = parser.parse_args()
     
-    # Scale Settings
-    s = SETTINGS.copy()
-    s['mosh_threshold'] = int(s['mosh_threshold'] * args.drag)
-    s['drag_momentum'] = min(0.99, s['drag_momentum'] * (1 + (args.drag - 1) * 0.05))
-    
-    for k in ['prob_stutter', 'prob_melt', 'prob_crush', 'prob_invert']:
-        s[k] = min(1.0, s[k] * args.chaos)
-        
-    process_video(args.v1, args.v2, args.out, s)
+    process_video(args.v1, args.v2, args.out, args.drag, args.chaos)
