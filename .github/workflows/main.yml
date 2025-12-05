@@ -1,41 +1,64 @@
-name: Hyper-Fast Datamosh
+name: Hyper-Ludovico Datamosh
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      v1:
+        description: "Primary input video path (relative to repo)"
+        required: true
+        default: "input.mp4"
+      v2:
+        description: "Secondary input / texture video path (relative to repo)"
+        required: true
+        default: "image2.mp4"
+      out:
+        description: "Output video filename"
+        required: true
+        default: "output_hyper_ludovico.mp4"
+      drag:
+        description: "Drag multiplier (trail strength)"
+        required: false
+        default: "2.0"
+      chaos:
+        description: "Chaos multiplier (glitches, color drifts)"
+        required: false
+        default: "1.5"
 
 jobs:
-  fast-mosh:
+  datamosh:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
 
-      - name: Setup
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate
+      - name: Run Hyper-Ludovico datamosh
         run: |
-          # Verify files
-          ls -lh input.mp4 image2.mp4
-          
-          # Run the new optimized engine
-          # High drag for melting, High chaos for colors
           python script.py \
-            --v1 input.mp4 --v2 image2.mp4 \
-            --out output_hyper.mp4 \
-            --drag 1.2 --chaos 1.5
+            --v1 "${{ github.event.inputs.v1 }}" \
+            --v2 "${{ github.event.inputs.v2 }}" \
+            --out "${{ github.event.inputs.out }}" \
+            --drag "${{ github.event.inputs.drag }}" \
+            --chaos "${{ github.event.inputs.chaos }}"
 
-      - name: Upload
-        if: always()
+      - name: Upload moshed video artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hyper-result
-          path: output_hyper.mp4
-          retention-days: 5
+          name: hyper-ludovico-output
+          path: ${{ github.event.inputs.out }}
 
