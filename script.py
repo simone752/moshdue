@@ -1,93 +1,111 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------------------------
-# HYPER-LUDOVICO: FAST ABSTRACT ENGINE (ENHANCED)
+# HYPER-LUDOVICO: DIGITAL ENTROPY ENGINE
 # -----------------------------------------------------------------------------
-# Speed: ~10x faster (Processes at 240p, Upscales to 720p)
-# Style: Abstract, melting P-frames, blocky glitches, color drifts, long smears.
+# GOAL:
+#   - Relentless visual collapse / data corruption
+#   - Extreme recursive pixel dragging, tectonic shifts, non-linear flows
+#   - Bit-level corruption of frame buffers
+#   - YUV-channel abuse: VHS-from-hell psychedelic bleed
+#   - Pure harsh-noise audio synthesis (no source audio)
+#   - Still: fast render (240p → 720p, ultrafast x264, light output)
 # -----------------------------------------------------------------------------
 
 import os
-import sys
 import shutil
 import subprocess
 import random
 import argparse
 import tempfile
-import time
 import numpy as np
 import cv2
+import wave
+import struct
 
 # -------------------- BASE CONFIG --------------------
-# These are "sane defaults". You can override most of them via CLI.
+
 BASE_SETTINGS = {
     "fps": 24,
-    "internal_res": (426, 240),   # 240p = Blocky & Insanely Fast
+    "internal_res": (426, 240),   # 240p for speed & blockiness
 
     # Feedback / drag physics
-    "threshold": 32,              # Higher = more areas keep the ghost trail
-    "decay": 0.992,               # 0.97–0.999 (higher = longer trails)
-    "zoom_drift": 1.012,          # Base zoom (melting forward movement)
-    "zoom_jitter": 0.015,         # Frame-to-frame zoom randomness
-    "rotate_range": 1.5,          # +/- degrees of rotation for feedback
-    "smear_passes": 2,            # How many times we warp the ghost per frame
+    "threshold": 28.0,            # Base threshold for ghost masking
+    "decay": 0.995,               # Trails: higher = longer persistence
+    "zoom_base": 1.012,           # Base zoom drift
+    "zoom_jitter": 0.02,          # Per-frame zoom variation
+    "rotate_range": 2.0,          # +/- degrees
 
-    # Block glitch parameters
-    "block_prob": 0.08,           # Probability of a block-glitch event
-    "block_iterations": 3,        # How many blocks to scramble when triggered
+    # Recursive smear
+    "smear_passes": 3,            # Recursive warps per frame
+
+    # P-frame hold (for stretching smears)
+    "hold_prob": 0.05,
+    "hold_frames_max": 25,
+
+    # Block glitches
+    "block_prob": 0.15,
+    "block_iterations": 5,
     "block_size_min": 16,
-    "block_size_max": 64,
+    "block_size_max": 72,
 
-    # Color drift / jitter
-    "color_jitter_base": 6,       # Base channel offset in pixels
+    # Bit-level corruption
+    # (probability per BYTE, applied on selected stripes; burst mode multiplies)
+    "bitflip_prob": 0.002,
+
+    # Color jitter / channel drift
+    "color_jitter_base": 8,
+
+    # Phase lengths (in frames)
+    "phase_min": 40,
+    "phase_max": 160,
 }
 
-# -------------------- AUDIO FX --------------------
-def get_abrasive_audio_filter():
-    """Generates a random, fast-rendering audio chain."""
-    chains = [
-        # Bitcrush
-        "acrusher=bits=4:mode=log:aa=1, volume=1.5",
-        # Haunted Reverb
-        "aecho=0.8:0.9:500:0.3, lowpass=f=800",
-        # Broken Radio
-        "highpass=f=300, lowpass=f=3000, vibrato=f=10:d=0.5",
-        # Deep Fried
-        "treble=g=10, bass=g=10, acrusher=level_in=1:level_out=1:bits=8:mode=log:aa=1",
-    ]
-    return random.choice(chains)
+# -------------------- BIT-LEVEL CORRUPTION --------------------
 
-# -------------------- FAST VISUAL FX --------------------
+def bitflip_stripes(img, base_prob, chaos_mult=1.0, burst_factor=1.0):
+    """
+    Bit-level corruption on raw pixel bytes.
+    Applies flipping in full or striped regions for tectonic chroma breakdown.
+    """
+    if base_prob <= 0:
+        return img
 
-def fast_color_jitter(img, base_intensity=6, chaos_mult=1.0):
-    """
-    Drifts RGB channels using array slicing (Instant).
-    Now stronger & chaos-aware.
-    """
     h, w, c = img.shape
-    intensity = max(1, int(base_intensity * chaos_mult))
-    dx_b = random.randint(-intensity, intensity)
-    dy_b = random.randint(-intensity, intensity)
-    dx_r = random.randint(-intensity, intensity)
-    dy_r = random.randint(-intensity, intensity)
-
     out = img.copy()
 
-    # Blue channel drift
-    out[:, :, 0] = np.roll(out[:, :, 0], dx_b, axis=1)
-    out[:, :, 0] = np.roll(out[:, :, 0], dy_b, axis=0)
+    # Decide corruption mode
+    mode = random.choice(["full", "hstripe", "vstripe"])
+    if mode == "full":
+        region = out
+    elif mode == "hstripe":
+        stripe_h = random.randint(h // 8, max(2, h // 3))
+        y1 = random.randint(0, max(0, h - stripe_h))
+        region = out[y1:y1 + stripe_h, :, :]
+    else:  # vstripe
+        stripe_w = random.randint(w // 8, max(2, w // 3))
+        x1 = random.randint(0, max(0, w - stripe_w))
+        region = out[:, x1:x1 + stripe_w, :]
 
-    # Red channel drift (slightly different vector)
-    out[:, :, 2] = np.roll(out[:, :, 2], dx_r, axis=1)
-    out[:, :, 2] = np.roll(out[:, :, 2], dy_r, axis=0)
+    flat = region.reshape(-1)  # uint8
+    prob = base_prob * chaos_mult * burst_factor
 
+    if prob <= 0:
+        return out
+
+    mask = np.random.rand(flat.size) < prob
+    if not mask.any():
+        return out
+
+    bits = (1 << np.random.randint(0, 8, size=mask.sum(), dtype=np.uint8)).astype(np.uint8)
+    flat_masked = flat[mask]
+    flat_masked ^= bits
+    flat[mask] = flat_masked
     return out
 
+# -------------------- VISUAL FX --------------------
 
-def fast_block_shuffle(img, prob=0.08, iterations=3, size_min=16, size_max=64):
-    """
-    Blocky glitch: pick some rectangular blocks and shuffle them around.
-    Cheap and very blocky, tuned for 240p.
-    """
+def fast_block_shuffle(img, prob=0.1, iterations=4, size_min=16, size_max=64):
+    """Structural block glitches: swaps random rectangular blocks."""
     if random.random() > prob:
         return img
 
@@ -99,7 +117,6 @@ def fast_block_shuffle(img, prob=0.08, iterations=3, size_min=16, size_max=64):
         bw = random.randint(size_min, size_max)
         y1 = random.randint(0, max(0, h - bh))
         x1 = random.randint(0, max(0, w - bw))
-
         y2 = random.randint(0, max(0, h - bh))
         x2 = random.randint(0, max(0, w - bw))
 
@@ -111,12 +128,34 @@ def fast_block_shuffle(img, prob=0.08, iterations=3, size_min=16, size_max=64):
     return out
 
 
+def fast_color_jitter_yuv(img_bgr, chaos_mult=1.0):
+    """
+    Independent, violent YUV channel abuse.
+    Converts to YCrCb, mutates channels, and returns BGR.
+    """
+    img_yuv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb).astype(np.float32)
+    Y, Cr, Cb = cv2.split(img_yuv)
+
+    # Luma: flicker, inversions
+    if random.random() < 0.4 * chaos_mult:
+        Y = 255.0 - Y
+    gain_Y = 0.6 + 1.4 * random.random() * chaos_mult
+    Y = np.clip(Y * gain_Y + random.uniform(-40, 40) * chaos_mult, 0, 255)
+
+    # Chroma: insane saturation, bias shifting
+    gain_C = 0.8 + 2.5 * random.random() * chaos_mult
+    shift_Cr = random.uniform(-80, 80) * chaos_mult
+    shift_Cb = random.uniform(-80, 80) * chaos_mult
+    Cr = np.clip((Cr - 128) * gain_C + 128 + shift_Cr, 0, 255)
+    Cb = np.clip((Cb - 128) * gain_C + 128 + shift_Cb, 0, 255)
+
+    img_yuv = cv2.merge([Y, Cr, Cb])
+    img_yuv = np.clip(img_yuv, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(img_yuv, cv2.COLOR_YCrCb2BGR)
+
+
 def apply_feedback_warp(prev_img, zoom, rotate, smear_passes=1):
-    """
-    The Core "Melt" Mechanic.
-    Instead of flow, we just slightly zoom/rotate the previous frame.
-    Now supports multiple smear passes for stronger dragging.
-    """
+    """Recursive zoom/rotate smear for melting feedback."""
     h, w = prev_img.shape[:2]
     center = (w // 2, h // 2)
     ghost = prev_img
@@ -127,103 +166,168 @@ def apply_feedback_warp(prev_img, zoom, rotate, smear_passes=1):
 
     return ghost
 
-# -------------------- PROCESSOR --------------------
+
+def apply_global_shift(frame, chaos_mult=1.0):
+    """Non-linear, brutal frame roll / tearing."""
+    h, w, c = frame.shape
+    out = frame
+
+    if random.random() < 0.4 * chaos_mult:
+        # Horizontal tear
+        shift = random.randint(-w // 3, w // 3)
+        band_h = random.randint(h // 6, h // 2)
+        y1 = random.randint(0, max(0, h - band_h))
+        band = out[y1:y1+band_h]
+        out[y1:y1+band_h] = np.roll(band, shift, axis=1)
+
+    if random.random() < 0.3 * chaos_mult:
+        # Vertical roll
+        shift = random.randint(-h // 4, h // 4)
+        out = np.roll(out, shift, axis=0)
+
+    return out
+
+# -------------------- AUDIO: HARSH NOISE SYNTHESIS --------------------
+
+def synth_harsh_noise(duration_sec, sample_rate=22050, chaos=3.0, drag=2.0):
+    """
+    Pure harsh noise / experimental:
+    - White noise + warped square/sine
+    - Non-repeating envelopes
+    - Granular stutter & time-smear
+    - Heavy saturation & clipping
+    """
+    if duration_sec <= 0:
+        duration_sec = 1.0
+
+    n_samples = int(duration_sec * sample_rate)
+    t = np.linspace(0.0, duration_sec, n_samples, endpoint=False)
+
+    # Base white noise
+    white = np.random.uniform(-1.0, 1.0, n_samples)
+
+    # Random-walking frequency for square & sine
+    freq = np.zeros(n_samples, dtype=np.float32)
+    freq[0] = random.uniform(40, 4000)
+    step_scale = 40.0 * chaos
+    for i in range(1, n_samples):
+        freq[i] = freq[i-1] + np.random.uniform(-step_scale, step_scale)
+    freq = np.clip(freq, 20, 10000)
+
+    phase = 2 * np.pi * np.cumsum(freq) / sample_rate
+    square = np.sign(np.sin(phase))
+    sine = np.sin(phase * random.uniform(0.5, 2.5))
+
+    # Amplitude envelope: random segments w/ ramps (non-repeating feel)
+    env = np.zeros(n_samples, dtype=np.float32)
+    idx = 0
+    while idx < n_samples:
+        seg_len = random.randint(int(0.01 * sample_rate), int(0.3 * sample_rate))
+        seg_len = min(seg_len, n_samples - idx)
+        amp_start = random.random() ** 2
+        amp_end = random.random() ** 2
+        seg = np.linspace(amp_start, amp_end, seg_len, endpoint=False)
+        env[idx:idx+seg_len] = seg
+        idx += seg_len
+    env = np.clip(env * (0.2 + 1.5 * chaos), 0, 10.0)
+
+    # Combine components
+    signal = 0.6 * white + 0.8 * square + 0.4 * sine
+    signal *= env
+
+    # Time-smear / stutter: repeat or zero random chunks
+    chunk_size = int(0.02 * sample_rate)
+    if chunk_size < 1:
+        chunk_size = 1
+    n_chunks = n_samples // chunk_size
+    for c in range(n_chunks):
+        if random.random() < 0.1 * chaos:
+            start = c * chunk_size
+            end = start + chunk_size
+            mode = random.choice(["repeat_prev", "mute", "invert"])
+            if mode == "repeat_prev" and c > 0:
+                prev_start = (c - 1) * chunk_size
+                signal[start:end] = signal[prev_start:prev_start+chunk_size]
+            elif mode == "mute":
+                signal[start:end] = 0.0
+            elif mode == "invert":
+                signal[start:end] = -signal[start:end]
+
+    # Ring-mod type effect: multiply by a slower modulator
+    mod_freq = random.uniform(2.0, 40.0 * chaos)
+    mod = np.sin(2 * np.pi * mod_freq * t + random.uniform(0, 2*np.pi))
+    signal *= (0.5 + 0.5 * mod)
+
+    # Extreme waveshaping / clipping
+    drive = 3.0 * chaos * drag
+    signal = np.tanh(signal * drive)
+
+    # Normalize to int16 range
+    signal /= (np.max(np.abs(signal)) + 1e-6)
+    signal_int16 = (signal * 32767).astype(np.int16)
+    return signal_int16, sample_rate
+
+
+def write_wav_mono(path, data_int16, sample_rate):
+    """Write mono 16-bit PCM WAV using standard library."""
+    with wave.open(path, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        frames = struct.pack('<' + 'h' * len(data_int16), *data_int16.tolist())
+        wf.writeframes(frames)
+
+# -------------------- MAIN PROCESSOR --------------------
 
 def process_video(
     v1_path,
     v2_path,
     out_path,
-    drag_mult=1.0,
-    chaos_mult=1.0,
-    # Optional detailed overrides (all may be None)
+    drag_mult=2.0,
+    chaos_mult=3.0,
     fps=None,
     internal_res=None,
-    threshold=None,
-    decay=None,
-    zoom=None,
-    zoom_jitter=None,
-    rotate_range=None,
-    smear_passes=None,
-    block_prob=None,
-    block_iterations=None,
-    block_size_min=None,
-    block_size_max=None,
-    color_jitter_base=None,
     seed=-1,
-    crf=22,
+    crf=24,
 ):
-    # 1. RANDOMIZE SESSION / SEED
+    # Seed for reproducibility / chaos
     if seed < 0:
-        seed = random.randint(0, 999999)
+        seed = random.randint(0, 9999999)
     random.seed(seed)
     np.random.seed(seed)
     print(f">>> SEED: {seed}")
 
-    # Build settings from base + overrides
     s = BASE_SETTINGS.copy()
 
+    # Overrides
     if fps is not None:
         s["fps"] = int(fps)
     if internal_res is not None:
         s["internal_res"] = internal_res
-    if threshold is not None:
-        s["threshold"] = float(threshold)
-    if decay is not None:
-        s["decay"] = float(decay)
-    if zoom is not None:
-        s["zoom_drift"] = float(zoom)
-    if zoom_jitter is not None:
-        s["zoom_jitter"] = float(zoom_jitter)
-    if rotate_range is not None:
-        s["rotate_range"] = float(rotate_range)
-    if smear_passes is not None:
-        s["smear_passes"] = int(smear_passes)
-    if block_prob is not None:
-        s["block_prob"] = float(block_prob)
-    if block_iterations is not None:
-        s["block_iterations"] = int(block_iterations)
-    if block_size_min is not None:
-        s["block_size_min"] = int(block_size_min)
-    if block_size_max is not None:
-        s["block_size_max"] = int(block_size_max)
-    if color_jitter_base is not None:
-        s["color_jitter_base"] = int(color_jitter_base)
 
-    # Apply drag multiplier to threshold & decay for stronger dragging
-    s['threshold'] *= float(drag_mult)          # more pixels keep the ghost
-    s['decay'] = 1.0 - (1.0 - s['decay']) / max(0.1, float(drag_mult))
+    # Drag & chaos injection
+    s["threshold"] *= drag_mult
+    s["decay"] = 1.0 - (1.0 - s["decay"]) / max(0.4, drag_mult)
+    s["zoom_jitter"] *= chaos_mult
+    s["block_prob"] = min(1.0, s["block_prob"] * chaos_mult)
+    s["block_iterations"] = max(1, int(s["block_iterations"] * chaos_mult))
+    s["color_jitter_base"] = max(2, int(s["color_jitter_base"] * chaos_mult))
+    s["bitflip_prob"] *= chaos_mult
 
-    # Chaos modulates zoom jitter, block glitches, and color jitter
-    s['zoom_jitter'] *= float(chaos_mult)
-    s['block_prob'] *= float(chaos_mult)
-    s['block_iterations'] = max(1, int(s['block_iterations'] * chaos_mult))
-    s['color_jitter_base'] = max(1, int(s['color_jitter_base'] * chaos_mult))
-
-    # Randomized zoom/rotation around configured ranges
-    s['zoom_drift'] = s['zoom_drift'] * (1.0 + random.uniform(-0.02, 0.03) * chaos_mult)
-    rotate_base = random.uniform(-s['rotate_range'], s['rotate_range']) * chaos_mult
-
-    # Randomize Color Mapping
-    color_map = [0, 1, 2]  # BGR
-    if random.random() < (0.3 * chaos_mult):
-        random.shuffle(color_map)  # Psychedelic channel swap
-
+    w, h = s["internal_res"]
     print(f" -> FPS: {s['fps']}")
-    print(f" -> Internal Res: {s['internal_res'][0]}x{s['internal_res'][1]}")
-    print(f" -> Zoom base: {s['zoom_drift']:.4f} | Rotate base: {rotate_base:.2f}")
+    print(f" -> Internal res: {w}x{h}")
     print(f" -> Threshold: {s['threshold']:.2f} | Decay: {s['decay']:.4f}")
-    print(f" -> Smear passes: {s['smear_passes']}")
-    print(f" -> Block prob: {s['block_prob']:.3f} | Block iters: {s['block_iterations']}")
-    print(f" -> Color jitter base: {s['color_jitter_base']}")
-    print(f" -> Channels: {color_map}")
+    print(f" -> Zoom base: {s['zoom_base']:.4f} | Zoom jitter: {s['zoom_jitter']:.4f}")
+    print(f" -> Block prob: {s['block_prob']:.2f} | iters: {s['block_iterations']}")
+    print(f" -> Bitflip prob: {s['bitflip_prob']:.5f}")
+    print(f" -> Drag mult: {drag_mult} | Chaos mult: {chaos_mult}")
+    print(f" -> CRF: {crf}")
 
     tmp = tempfile.mkdtemp()
-
     try:
-        # 2. EXTRACT FRAMES (Fast BMP sequence at internal res)
-        w, h = s['internal_res']
+        # -------------------- EXTRACT FRAMES --------------------
         print(" -> Extracting low-res frames...")
-
         cmd_v1 = [
             "ffmpeg", "-y", "-i", v1_path,
             "-vf", f"fps={s['fps']},scale={w}:{h}",
@@ -240,39 +344,51 @@ def process_video(
 
         f1_files = sorted([f for f in os.listdir(tmp) if f.startswith("f1_")])
         f2_files = sorted([f for f in os.listdir(tmp) if f.startswith("f2_")])
-
         if not f1_files:
-            raise Exception("Input 1 failed to extract any frames.")
+            raise RuntimeError("Input v1 produced no frames.")
 
         total_frames = len(f1_files) + len(f2_files)
-        print(f" -> Total frames to mosh: {total_frames}")
+        print(f" -> Total frames: {total_frames}")
 
-        prev_frame = None
         out_dir = os.path.join(tmp, "out")
         os.makedirs(out_dir, exist_ok=True)
 
-        thresh_val = s['threshold']
-        decay_val = s['decay']
+        prev_frame = None
+        thresh_val = s["threshold"]
+        decay_val = s["decay"]
 
-        # P-frame "hold" mechanic for extra dragging ribbons
-        hold_frames_max = int(15 * drag_mult)  # how long a ghost can persist
+        # P-frame hold
         hold_counter = 0
+        hold_frames_max = int(s["hold_frames_max"] * drag_mult)
+
+        # Phase system: corrosive vs burst
+        current_phase = "corrosive"
+        phase_remaining = random.randint(s["phase_min"], s["phase_max"])
+
+        # Pre-randomized color channel map
+        base_color_map = [0, 1, 2]
 
         for i in range(total_frames):
-            if i % 50 == 0:
-                print(f"    Frame {i}/{total_frames}...", end='\r')
+            if i % 40 == 0:
+                print(f"   Frame {i}/{total_frames} [{current_phase}]      ", end="\r")
 
-            # --- Source Logic (Linear Mix) ---
+            # Phase handling
+            phase_remaining -= 1
+            if phase_remaining <= 0:
+                current_phase = "burst" if current_phase == "corrosive" else "corrosive"
+                phase_remaining = random.randint(s["phase_min"], s["phase_max"])
+
+            # Base frame selection & blending
             if i < len(f1_files):
                 curr = cv2.imread(os.path.join(tmp, f1_files[i]))
                 if curr is None:
                     continue
-                # Transition blend into second clip
-                if f2_files and i > len(f1_files) * 0.8:
+                if f2_files and i > len(f1_files) * 0.7:
                     idx2 = random.randint(0, len(f2_files) - 1)
                     alt = cv2.imread(os.path.join(tmp, f2_files[idx2]))
                     if alt is not None:
-                        curr = cv2.addWeighted(curr, 0.7, alt, 0.3, 0)
+                        alpha = 0.5 + 0.5 * random.random()
+                        curr = cv2.addWeighted(curr, 1.0 - alpha, alt, alpha, 0)
             else:
                 idx = i - len(f1_files)
                 if idx >= len(f2_files):
@@ -281,7 +397,10 @@ def process_video(
                 if curr is None:
                     continue
 
-            # Apply Color Scramble (Psychedelic channel remap)
+            # Randomize color map occasionally for psychedelic BGR scrambles
+            color_map = base_color_map[:]
+            if random.random() < 0.4 * chaos_mult:
+                random.shuffle(color_map)
             curr = curr[:, :, color_map]
 
             if prev_frame is None:
@@ -290,148 +409,126 @@ def process_video(
                 cv2.imwrite(f"{out_dir}/frame_{i:05d}.bmp", final)
                 continue
 
-            # --- FEEDBACK P-FRAME / DRAGGING GHOST ---
-            # Slightly varying zoom/rotation per frame for living trails
-            local_zoom = s['zoom_drift'] + random.uniform(-s['zoom_jitter'], s['zoom_jitter'])
-            local_rotate = rotate_base + random.uniform(-s['rotate_range'], s['rotate_range']) * 0.1
+            # -------------------- FEEDBACK / DRAGGING --------------------
+            if current_phase == "corrosive":
+                local_zoom = s["zoom_base"] + random.uniform(-s["zoom_jitter"], s["zoom_jitter"])
+                local_rotate = random.uniform(-s["rotate_range"], s["rotate_range"])
+                smear_passes = s["smear_passes"]
+                burst_factor = 0.7
+                local_thresh = thresh_val * 1.2   # more ghost kept
+            else:  # burst
+                local_zoom = s["zoom_base"] + random.uniform(-s["zoom_jitter"] * 3, s["zoom_jitter"] * 3)
+                local_rotate = random.uniform(-s["rotate_range"] * 3, s["rotate_range"] * 3)
+                smear_passes = s["smear_passes"] + 1
+                burst_factor = 3.0
+                local_thresh = max(5.0, thresh_val * 0.5)  # less mask, more violent change
 
-            ghost = apply_feedback_warp(prev_frame, local_zoom, local_rotate, s['smear_passes'])
+            ghost = apply_feedback_warp(prev_frame, local_zoom, local_rotate, smear_passes)
 
-            # 1. Difference field
             diff = cv2.absdiff(curr, ghost)
             diff_mag = np.sum(diff, axis=2)
-
-            # 2. Mask: where is the scene "similar" -> keep ghost trail
-            mask = diff_mag < thresh_val
+            mask = diff_mag < local_thresh
             mask_3d = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
 
-            # 3. Ghost decay blend (prevents total overexposure)
-            ghost_decayed = cv2.addWeighted(ghost, decay_val, curr, 1.0 - decay_val, 0)
-
-            # 4. Initial composite
+            ghost_decayed = cv2.addWeighted(ghost, decay_val, curr, 1.0 - decay_val, 0.0)
             final = np.where(mask_3d, ghost_decayed, curr)
 
-            # P-frame "hold": sometimes do NOT update prev_frame to stretch smears
+            # P-frame hold mechanic
             if hold_counter > 0:
                 hold_counter -= 1
             else:
-                if random.random() < 0.02 * drag_mult:
+                if random.random() < s["hold_prob"] * drag_mult:
                     hold_counter = random.randint(1, max(2, hold_frames_max))
                 else:
                     prev_frame = final
 
-            # --- CHEAP CHAOS FX ---
+            # Global tectonic rolling
+            final = apply_global_shift(final, chaos_mult=chaos_mult)
 
-            # RGB channel drift (chaos-scaled)
-            if random.random() < (0.15 * chaos_mult):
-                final = fast_color_jitter(final, s['color_jitter_base'], chaos_mult)
-
-            # Negative flashes
-            if random.random() < (0.03 * chaos_mult):
-                final = cv2.bitwise_not(final)
-
-            # Blocky glitches
-            final = fast_block_shuffle(
+            # Bit-level corruption
+            final = bitflip_stripes(
                 final,
-                prob=s['block_prob'],
-                iterations=s['block_iterations'],
-                size_min=s['block_size_min'],
-                size_max=s['block_size_max'],
+                base_prob=s["bitflip_prob"],
+                chaos_mult=chaos_mult,
+                burst_factor=burst_factor,
             )
 
-            # Save as BMP (fast I/O)
+            # YUV-channel abuse (VHS-from-hell)
+            if random.random() < 0.8:
+                final = fast_color_jitter_yuv(final, chaos_mult=chaos_mult)
+
+            # Block-level glitches
+            final = fast_block_shuffle(
+                final,
+                prob=s["block_prob"],
+                iterations=s["block_iterations"],
+                size_min=s["block_size_min"],
+                size_max=s["block_size_max"],
+            )
+
             cv2.imwrite(f"{out_dir}/frame_{i:05d}.bmp", final)
 
         print("\n -> Rendering video (upscale to 720p)...")
         temp_vid = os.path.join(tmp, "temp.mp4")
-
         cmd_render = [
-            "ffmpeg", "-y", "-framerate", str(s['fps']),
+            "ffmpeg", "-y", "-framerate", str(s["fps"]),
             "-i", f"{out_dir}/frame_%05d.bmp",
             "-vf", "scale=1280:720:flags=neighbor",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", str(crf),
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-crf", str(crf),
             "-pix_fmt", "yuv420p",
-            temp_vid
+            temp_vid,
         ]
         subprocess.run(cmd_render, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 4. AUDIO DESTRUCTION
-        print(" -> Muxing & destroying audio...")
-        try:
-            audio_path = os.path.join(tmp, "audio.aac")
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", v1_path, "-vn", "-c:a", "aac", audio_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+        # -------------------- SYNTHESIZE HARSH NOISE AUDIO --------------------
+        duration_sec = total_frames / float(s["fps"])
+        print(f" -> Synthesizing harsh noise audio ({duration_sec:.2f}s)...")
+        noise_data, sr = synth_harsh_noise(duration_sec, sample_rate=22050, chaos=chaos_mult, drag=drag_mult)
+        audio_path = os.path.join(tmp, "noise.wav")
+        write_wav_mono(audio_path, noise_data, sr)
 
-            af = get_abrasive_audio_filter()
-            cmd_mux = [
-                "ffmpeg", "-y",
-                "-i", temp_vid,
-                "-i", audio_path,
-                "-af", af,
-                "-c:v", "copy",
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest", out_path,
-            ]
-            subprocess.run(cmd_mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f" !! Audio mux failed, using silent video. Reason: {e}")
-            shutil.move(temp_vid, out_path)
-
+        # -------------------- MUX --------------------
+        print(" -> Muxing video + noise...")
+        cmd_mux = [
+            "ffmpeg", "-y",
+            "-i", temp_vid,
+            "-i", audio_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-shortest",
+            out_path,
+        ]
+        subprocess.run(cmd_mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"DONE: {out_path}")
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+# -------------------- CLI --------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Hyper-Ludovico fast abstract datamosh engine."
+        description="Hyper-Ludovico: Digital Entropy Engine (extreme datamosh + harsh noise)."
     )
     parser.add_argument("--v1", required=True, help="Primary input video.")
     parser.add_argument("--v2", required=True, help="Secondary input / texture video.")
-    parser.add_argument("--out", default="output.mp4", help="Output video path.")
-    parser.add_argument("--drag", type=float, default=1.0,
-                        help="Drag multiplier (trail strength & length). Default=1.0")
-    parser.add_argument("--chaos", type=float, default=1.0,
-                        help="Chaos multiplier (glitches, color drifts). Default=1.0")
-
-    # Extra manual controls (all optional)
-    parser.add_argument("--seed", type=int, default=-1,
-                        help="Random seed (-1 = random).")
+    parser.add_argument("--out", default="output_entropy.mp4", help="Output video path.")
+    parser.add_argument("--drag", type=float, default=2.0,
+                        help="Drag multiplier (trail strength/length). Default=2.0")
+    parser.add_argument("--chaos", type=float, default=3.0,
+                        help="Chaos multiplier (glitches, corruption, noise). Default=3.0")
     parser.add_argument("--fps", type=int, default=None,
                         help="Override FPS (default from BASE_SETTINGS).")
     parser.add_argument("--internal-width", type=int, default=None,
                         help="Internal processing width (default 426).")
     parser.add_argument("--internal-height", type=int, default=None,
                         help="Internal processing height (default 240).")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="Base threshold for ghost masking.")
-    parser.add_argument("--decay", type=float, default=None,
-                        help="Base decay (0-1) for trails.")
-    parser.add_argument("--zoom", type=float, default=None,
-                        help="Base zoom drift.")
-    parser.add_argument("--zoom-jitter", type=float, default=None,
-                        help="Frame-to-frame zoom randomness.")
-    parser.add_argument("--rotate-range", type=float, default=None,
-                        help="Max rotation range for feedback.")
-    parser.add_argument("--smear-passes", type=int, default=None,
-                        help="Number of smear passes per frame (1-3 is good).")
-    parser.add_argument("--block-prob", type=float, default=None,
-                        help="Probability of block glitches.")
-    parser.add_argument("--block-iters", type=int, default=None,
-                        help="Number of blocks to scramble when glitch triggers.")
-    parser.add_argument("--block-size-min", type=int, default=None,
-                        help="Minimum block size for glitches.")
-    parser.add_argument("--block-size-max", type=int, default=None,
-                        help="Maximum block size for glitches.")
-    parser.add_argument("--color-jitter-base", type=int, default=None,
-                        help="Base intensity of color channel drift.")
-    parser.add_argument("--crf", type=int, default=22,
-                        help="CRF for x264 (lower = higher quality, larger file).")
-
+    parser.add_argument("--seed", type=int, default=-1,
+                        help="Random seed (-1 = random).")
+    parser.add_argument("--crf", type=int, default=24,
+                        help="CRF for x264; higher = smaller, more compressed, more artifacted. Default=24.")
     args = parser.parse_args()
 
     internal_res = None
@@ -446,18 +543,8 @@ if __name__ == "__main__":
         chaos_mult=args.chaos,
         fps=args.fps,
         internal_res=internal_res,
-        threshold=args.threshold,
-        decay=args.decay,
-        zoom=args.zoom,
-        zoom_jitter=args.zoom_jitter,
-        rotate_range=args.rotate_range,
-        smear_passes=args.smear_passes,
-        block_prob=args.block_prob,
-        block_iterations=args.block_iters,
-        block_size_min=args.block_size_min,
-        block_size_max=args.block_size_max,
-        color_jitter_base=args.color_jitter_base,
         seed=args.seed,
         crf=args.crf,
     )
+
 
