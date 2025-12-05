@@ -1,4 +1,4 @@
-name: Hyper-Ludovico Datamosh
+name: Hyper-Ludovico Entropy Engine
 
 on:
   workflow_dispatch:
@@ -8,24 +8,28 @@ on:
         required: true
         default: "input.mp4"
       v2:
-        description: "Secondary input / texture video path (relative to repo)"
+        description: "Secondary input/texture video path (relative to repo)"
         required: true
         default: "image2.mp4"
       out:
         description: "Output video filename"
         required: true
-        default: "output_hyper_ludovico.mp4"
+        default: "output_entropy.mp4"
       drag:
-        description: "Drag multiplier (trail strength)"
+        description: "Drag multiplier (trail strength/length)"
         required: false
-        default: "2.0"
+        default: "2.5"
       chaos:
-        description: "Chaos multiplier (glitches, color drifts)"
+        description: "Chaos multiplier (glitches, corruption, harsh noise)"
         required: false
-        default: "1.5"
+        default: "3.0"
+      crf:
+        description: "x264 CRF (higher = smaller+more compressed/artifacted)"
+        required: false
+        default: "24"
 
 jobs:
-  datamosh:
+  datamosh_entropy:
     runs-on: ubuntu-latest
 
     steps:
@@ -45,20 +49,22 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Only numpy + opencv-python needed; keep it light
+          pip install numpy opencv-python
 
-      - name: Run Hyper-Ludovico datamosh
+      - name: Run Hyper-Ludovico Entropy Engine
         run: |
           python script.py \
             --v1 "${{ github.event.inputs.v1 }}" \
             --v2 "${{ github.event.inputs.v2 }}" \
             --out "${{ github.event.inputs.out }}" \
             --drag "${{ github.event.inputs.drag }}" \
-            --chaos "${{ github.event.inputs.chaos }}"
+            --chaos "${{ github.event.inputs.chaos }}" \
+            --crf "${{ github.event.inputs.crf }}"
 
-      - name: Upload moshed video artifact
+      - name: Upload corrupted video artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hyper-ludovico-output
+          name: hyper-ludovico-entropy-output
           path: ${{ github.event.inputs.out }}
 
